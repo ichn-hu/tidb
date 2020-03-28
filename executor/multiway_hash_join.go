@@ -65,6 +65,8 @@ type MultiwayHashJoinExec struct {
 	probeSideExec     Executor
 	probeKeys         []*expression.Column
 	probeTypes        []*types.FieldType
+	// outerFilter can only be at probeSide if we are running inner join
+	outerFilter       expression.CNFExprs
 
 	// buildSide
 	numBuildExec int
@@ -72,9 +74,7 @@ type MultiwayHashJoinExec struct {
 	buildSideEstCount []float64
 	buildKeys         [][]*expression.Column
 	buildTypes        [][]*types.FieldType
-	// outerFilter can be at buildSide or probeSide
-	outerFilter       []expression.CNFExprs
-	rowContainer  []*hashRowContainer
+	rowContainer      []*hashRowContainer
 
 
 
@@ -283,7 +283,14 @@ func (e *MultiwayHashJoinExec) wait4BuildSide() (finished bool, err error) {
 			return false, err
 		}
 	}
-	if e.rowContainer.Len() == 0 && (e.joinType == plannercore.InnerJoin || e.joinType == plannercore.SemiJoin) {
+	hasEmpty := false
+	for _, rc := range e.rowContainer {
+		if rc.Len() == 0 {
+			hasEmpty = true
+			break
+		}
+	}
+	if hasEmpty && (e.joinType == plannercore.InnerJoin || e.joinType == plannercore.SemiJoin) {
 		return true, nil
 	}
 	return false, nil
@@ -458,18 +465,19 @@ func (e *MultiwayHashJoinExec) handleUnmatchedRowsFromHashTableInDisk(workerID u
 func (e *MultiwayHashJoinExec) waitJoinWorkersAndCloseResultChan() {
 	e.joinWorkerWaitGroup.Wait()
 	if e.useOuterToBuild {
-		if e.rowContainer.alreadySpilled() {
-			// Sequentially handling unmatched rows from the hash table to avoid random accessing IO
-			e.handleUnmatchedRowsFromHashTableInDisk(0)
-		} else {
-			// Concurrently handling unmatched rows from the hash table at the tail
-			for i := uint(0); i < e.concurrency; i++ {
-				var workerID = i
-				e.joinWorkerWaitGroup.Add(1)
-				go util.WithRecovery(func() { e.handleUnmatchedRowsFromHashTableInMemory(workerID) }, e.handleJoinWorkerPanic)
-			}
-			e.joinWorkerWaitGroup.Wait()
-		}
+		panic("experimental multiway join implementation does not support outer join")
+		//if e.rowContainer.alreadySpilled() {
+		//	// Sequentially handling unmatched rows from the hash table to avoid random accessing IO
+		//	e.handleUnmatchedRowsFromHashTableInDisk(0)
+		//} else {
+		//	// Concurrently handling unmatched rows from the hash table at the tail
+		//	for i := uint(0); i < e.concurrency; i++ {
+		//		var workerID = i
+		//		e.joinWorkerWaitGroup.Add(1)
+		//		go util.WithRecovery(func() { e.handleUnmatchedRowsFromHashTableInMemory(workerID) }, e.handleJoinWorkerPanic)
+		//	}
+		//	e.joinWorkerWaitGroup.Wait()
+		//}
 	}
 	close(e.joinResultCh)
 }
@@ -505,7 +513,7 @@ func (e *MultiwayHashJoinExec) runJoinWorker(workerID uint, probeKeyColIdx []int
 			break
 		}
 		if e.useOuterToBuild {
-			ok, joinResult = e.join2ChunkForOuterHashJoin(workerID, probeSideResult, hCtx, joinResult)
+			//ok, joinResult = e.join2ChunkForOuterHashJoin(workerID, probeSideResult, hCtx, joinResult)
 		} else {
 			ok, joinResult = e.join2Chunk(workerID, probeSideResult, hCtx, joinResult, selected)
 		}
@@ -611,8 +619,8 @@ func (e *MultiwayHashJoinExec) getNewJoinResult(workerID uint) (bool, *hashjoinW
 	return ok, joinResult
 }
 
-func (e *MultiwayHashJoinExec) join2Chunk(workerID uint, probeSideChk *chunk.Chunk, hCtx *hashContext, joinResult *hashjoinWorkerResult,
-	selected []bool) (ok bool, _ *hashjoinWorkerResult) {
+func (e *MultiwayHashJoinExec) join2Chunk(workerID uint, probeSideChk *chunk.Chunk, hCtx *hashContext,
+	joinResult *hashjoinWorkerResult, selected []bool) (ok bool, _ *hashjoinWorkerResult) {
 	var err error
 	selected, err = expression.VectorizedFilter(e.ctx, e.outerFilter, chunk.NewIterator4Chunk(probeSideChk), selected)
 	if err != nil {
@@ -622,7 +630,7 @@ func (e *MultiwayHashJoinExec) join2Chunk(workerID uint, probeSideChk *chunk.Chu
 
 	hCtx.initHash(probeSideChk.NumRows())
 	for _, i := range hCtx.keyColIdx {
-		err = codec.HashChunkSelected(e.rowContainer.sc, hCtx.hashVals, probeSideChk, hCtx.allTypes[i], i, hCtx.buf, hCtx.hasNull, selected)
+		err = codec.HashChunkSelected(e.rowContainer[0].sc, hCtx.hashVals, probeSideChk, hCtx.allTypes[i], i, hCtx.buf, hCtx.hasNull, selected)
 		if err != nil {
 			joinResult.err = err
 			return false, joinResult
@@ -654,7 +662,7 @@ func (e *MultiwayHashJoinExec) join2Chunk(workerID uint, probeSideChk *chunk.Chu
 func (e *MultiwayHashJoinExec) join2ChunkForOuterHashJoin(workerID uint, probeSideChk *chunk.Chunk, hCtx *hashContext, joinResult *hashjoinWorkerResult) (ok bool, _ *hashjoinWorkerResult) {
 	hCtx.initHash(probeSideChk.NumRows())
 	for _, i := range hCtx.keyColIdx {
-		err := codec.HashChunkColumns(e.rowContainer.sc, hCtx.hashVals, probeSideChk, hCtx.allTypes[i], i, hCtx.buf, hCtx.hasNull)
+		err := codec.HashChunkColumns(e.rowContainer[0].sc, hCtx.hashVals, probeSideChk, hCtx.allTypes[i], i, hCtx.buf, hCtx.hasNull)
 		if err != nil {
 			joinResult.err = err
 			return false, joinResult
@@ -734,7 +742,7 @@ func (e *MultiwayHashJoinExec) fetchAndBuildHashTable(ctx context.Context, b int
 	)
 
 	// TODO: Parallel build hash table. Currently not support because `rowHashMap` is not thread-safe.
-	err := e.buildHashTableForList(buildSideResultCh)
+	err := e.buildHashTableForList(b, buildSideResultCh)
 	if err != nil {
 		e.buildFinished[b] <- errors.Trace(err)
 		close(doneCh)
@@ -753,24 +761,24 @@ func (e *MultiwayHashJoinExec) fetchAndBuildHashTable(ctx context.Context, b int
 }
 
 // buildHashTableForList builds hash table from `list`.
-func (e *MultiwayHashJoinExec) buildHashTableForList(buildSideResultCh <-chan *chunk.Chunk) error {
+func (e *MultiwayHashJoinExec) buildHashTableForList(b int, buildSideResultCh <-chan *chunk.Chunk) error {
 	buildKeyColIdx := make([]int, len(e.buildKeys))
 	for i := range e.buildKeys {
-		buildKeyColIdx[i] = e.buildKeys[i].Index
+		buildKeyColIdx[i] = e.buildKeys[b][i].Index
 	}
 	hCtx := &hashContext{
-		allTypes:  e.buildTypes,
+		allTypes:  e.buildTypes[b],
 		keyColIdx: buildKeyColIdx,
 	}
 	var err error
 	var selected []bool
-	e.rowContainer = newHashRowContainer(e.ctx, int(e.buildSideEstCount), hCtx)
-	e.rowContainer.GetMemTracker().AttachTo(e.memTracker)
-	e.rowContainer.GetMemTracker().SetLabel(buildSideResultLabel)
-	e.rowContainer.GetDiskTracker().AttachTo(e.diskTracker)
-	e.rowContainer.GetDiskTracker().SetLabel(buildSideResultLabel)
+	e.rowContainer[b] = newHashRowContainer(e.ctx, int(e.buildSideEstCount[b]), hCtx)
+	e.rowContainer[b].GetMemTracker().AttachTo(e.memTracker)
+	e.rowContainer[b].GetMemTracker().SetLabel(buildSideResultLabel)
+	e.rowContainer[b].GetDiskTracker().AttachTo(e.diskTracker)
+	e.rowContainer[b].GetDiskTracker().SetLabel(buildSideResultLabel)
 	if config.GetGlobalConfig().OOMUseTmpStorage {
-		actionSpill := e.rowContainer.ActionSpill()
+		actionSpill := e.rowContainer[b].ActionSpill()
 		e.ctx.GetSessionVars().StmtCtx.MemTracker.FallbackOldAndSetNewAction(actionSpill)
 	}
 	for chk := range buildSideResultCh {
@@ -778,19 +786,19 @@ func (e *MultiwayHashJoinExec) buildHashTableForList(buildSideResultCh <-chan *c
 			return nil
 		}
 		if !e.useOuterToBuild {
-			err = e.rowContainer.PutChunk(chk)
+			err = e.rowContainer[b].PutChunk(chk)
 		} else {
 			var bitMap = bitmap.NewConcurrentBitmap(chk.NumRows())
 			e.outerMatchedStatus = append(e.outerMatchedStatus, bitMap)
 			e.memTracker.Consume(bitMap.BytesConsumed())
 			if len(e.outerFilter) == 0 {
-				err = e.rowContainer.PutChunk(chk)
+				err = e.rowContainer[b].PutChunk(chk)
 			} else {
 				selected, err = expression.VectorizedFilter(e.ctx, e.outerFilter, chunk.NewIterator4Chunk(chk), selected)
 				if err != nil {
 					return err
 				}
-				err = e.rowContainer.PutChunkSelected(chk, selected)
+				err = e.rowContainer[b].PutChunkSelected(chk, selected)
 			}
 		}
 		if err != nil {
