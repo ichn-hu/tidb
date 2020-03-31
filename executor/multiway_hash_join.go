@@ -58,7 +58,7 @@ type MultwayHashJoinExecBuildSide struct {
 }
 
 // MultiwayHashJoinExec implements the multiway hash join algorithm.
-// Currently we only experimentally support inner joins.
+// Currently we only experimentally support inner joins on same join keys across all joined multiple table.
 type MultiwayHashJoinExec struct {
 	baseExecutor
 
@@ -69,12 +69,13 @@ type MultiwayHashJoinExec struct {
 	outerFilter       expression.CNFExprs
 
 	// buildSide
-	numBuildExec int
+	numBuildExec	  int
 	buildSideExec     []Executor
 	buildSideEstCount []float64
 	buildKeys         [][]*expression.Column
 	buildTypes        [][]*types.FieldType
 	rowContainer      []*hashRowContainer
+	joinRetTypes      []
 
 
 
@@ -206,6 +207,16 @@ func (e *MultiwayHashJoinExec) Open(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// hashjoinWorkerResult stores the result of join workers,
+// `src` is for Chunk reuse: the main goroutine will get the join result chunk `chk`,
+// and push `chk` into `src` after processing, join worker goroutines get the empty chunk from `src`
+// and push new data into this chunk.
+type multiwayHashJoinWorkerResult struct {
+	chk *chunk.Chunk
+	err error
+	src chan<- *chunk.Chunk
 }
 
 // fetchProbeSideChunks get chunks from fetches chunks from the big table in a background goroutine
@@ -396,71 +407,71 @@ func (e *MultiwayHashJoinExec) handleJoinWorkerPanic(r interface{}) {
 	e.joinWorkerWaitGroup.Done()
 }
 
-// Concurrently handling unmatched rows from the hash table
-func (e *MultiwayHashJoinExec) handleUnmatchedRowsFromHashTableInMemory(workerID uint) {
-	ok, joinResult := e.getNewJoinResult(workerID)
-	if !ok {
-		return
-	}
-	numChks := e.rowContainer.NumChunks()
-	for i := int(workerID); i < numChks; i += int(e.concurrency) {
-		chk := e.rowContainer.GetChunk(i)
-		for j := 0; j < chk.NumRows(); j++ {
-			if !e.outerMatchedStatus[i].UnsafeIsSet(j) { // process unmatched outer rows
-				e.joiners[workerID].onMissMatch(false, chk.GetRow(j), joinResult.chk)
-			}
-			if joinResult.chk.IsFull() {
-				e.joinResultCh <- joinResult
-				ok, joinResult = e.getNewJoinResult(workerID)
-				if !ok {
-					return
-				}
-			}
-		}
-	}
-
-	if joinResult == nil {
-		return
-	} else if joinResult.err != nil || (joinResult.chk != nil && joinResult.chk.NumRows() > 0) {
-		e.joinResultCh <- joinResult
-	}
-}
-
-// Sequentially handling unmatched rows from the hash table
-func (e *MultiwayHashJoinExec) handleUnmatchedRowsFromHashTableInDisk(workerID uint) {
-	ok, joinResult := e.getNewJoinResult(workerID)
-	if !ok {
-		return
-	}
-	numChks := e.rowContainer.NumChunks()
-	for i := 0; i < numChks; i++ {
-		numOfRows := e.rowContainer.NumRowsOfChunk(i)
-		for j := 0; j < numOfRows; j++ {
-			row, err := e.rowContainer.GetRow(chunk.RowPtr{ChkIdx: uint32(i), RowIdx: uint32(j)})
-			if err != nil {
-				// Catching the error and send it
-				joinResult.err = err
-				e.joinResultCh <- joinResult
-				return
-			}
-			if !e.outerMatchedStatus[i].UnsafeIsSet(j) { // process unmatched outer rows
-				e.joiners[workerID].onMissMatch(false, row, joinResult.chk)
-			}
-			if joinResult.chk.IsFull() {
-				e.joinResultCh <- joinResult
-				ok, joinResult = e.getNewJoinResult(workerID)
-				if !ok {
-					return
-				}
-			}
-		}
-	}
-	if joinResult == nil {
-		return
-	} else if joinResult.err != nil || (joinResult.chk != nil && joinResult.chk.NumRows() > 0) {
-		e.joinResultCh <- joinResult
-	}
-}
+//// Concurrently handling unmatched rows from the hash table
+//func (e *MultiwayHashJoinExec) handleUnmatchedRowsFromHashTableInMemory(workerID uint) {
+//	ok, joinResult := e.getNewJoinResult(workerID)
+//	if !ok {
+//		return
+//	}
+//	numChks := e.rowContainer.NumChunks()
+//	for i := int(workerID); i < numChks; i += int(e.concurrency) {
+//		chk := e.rowContainer.GetChunk(i)
+//		for j := 0; j < chk.NumRows(); j++ {
+//			if !e.outerMatchedStatus[i].UnsafeIsSet(j) { // process unmatched outer rows
+//				e.joiners[workerID].onMissMatch(false, chk.GetRow(j), joinResult.chk)
+//			}
+//			if joinResult.chk.IsFull() {
+//				e.joinResultCh <- joinResult
+//				ok, joinResult = e.getNewJoinResult(workerID)
+//				if !ok {
+//					return
+//				}
+//			}
+//		}
+//	}
+//
+//	if joinResult == nil {
+//		return
+//	} else if joinResult.err != nil || (joinResult.chk != nil && joinResult.chk.NumRows() > 0) {
+//		e.joinResultCh <- joinResult
+//	}
+//}
+//
+//// Sequentially handling unmatched rows from the hash table
+//func (e *MultiwayHashJoinExec) handleUnmatchedRowsFromHashTableInDisk(workerID uint) {
+//	ok, joinResult := e.getNewJoinResult(workerID)
+//	if !ok {
+//		return
+//	}
+//	numChks := e.rowContainer.NumChunks()
+//	for i := 0; i < numChks; i++ {
+//		numOfRows := e.rowContainer.NumRowsOfChunk(i)
+//		for j := 0; j < numOfRows; j++ {
+//			row, err := e.rowContainer.GetRow(chunk.RowPtr{ChkIdx: uint32(i), RowIdx: uint32(j)})
+//			if err != nil {
+//				// Catching the error and send it
+//				joinResult.err = err
+//				e.joinResultCh <- joinResult
+//				return
+//			}
+//			if !e.outerMatchedStatus[i].UnsafeIsSet(j) { // process unmatched outer rows
+//				e.joiners[workerID].onMissMatch(false, row, joinResult.chk)
+//			}
+//			if joinResult.chk.IsFull() {
+//				e.joinResultCh <- joinResult
+//				ok, joinResult = e.getNewJoinResult(workerID)
+//				if !ok {
+//					return
+//				}
+//			}
+//		}
+//	}
+//	if joinResult == nil {
+//		return
+//	} else if joinResult.err != nil || (joinResult.chk != nil && joinResult.chk.NumRows() > 0) {
+//		e.joinResultCh <- joinResult
+//	}
+//}
 
 func (e *MultiwayHashJoinExec) waitJoinWorkersAndCloseResultChan() {
 	e.joinWorkerWaitGroup.Wait()
@@ -534,57 +545,57 @@ func (e *MultiwayHashJoinExec) runJoinWorker(workerID uint, probeKeyColIdx []int
 	}
 }
 
-func (e *MultiwayHashJoinExec) joinMatchedProbeSideRow2ChunkForOuterHashJoin(workerID uint, probeKey uint64, probeSideRow chunk.Row, hCtx *hashContext,
-	joinResult *hashjoinWorkerResult) (bool, *hashjoinWorkerResult) {
-	buildSideRows, rowsPtrs, err := e.rowContainer.GetMatchedRowsAndPtrs(probeKey, probeSideRow, hCtx)
-	if err != nil {
-		joinResult.err = err
-		return false, joinResult
-	}
-	if len(buildSideRows) == 0 {
-		return true, joinResult
-	}
+//func (e *MultiwayHashJoinExec) joinMatchedProbeSideRow2ChunkForOuterHashJoin(workerID uint, probeKey uint64, probeSideRow chunk.Row, hCtx *hashContext,
+//	joinResult *hashjoinWorkerResult) (bool, *hashjoinWorkerResult) {
+//	buildSideRows, rowsPtrs, err := e.rowContainer.GetMatchedRowsAndPtrs(probeKey, probeSideRow, hCtx)
+//	if err != nil {
+//		joinResult.err = err
+//		return false, joinResult
+//	}
+//	if len(buildSideRows) == 0 {
+//		return true, joinResult
+//	}
+//
+//	iter := chunk.NewIterator4Slice(buildSideRows)
+//	var outerMatchStatus []outerRowStatusFlag
+//	rowIdx := 0
+//	for iter.Begin(); iter.Current() != iter.End(); {
+//		outerMatchStatus, err = e.joiners[workerID].tryToMatchOuters(iter, probeSideRow, joinResult.chk, outerMatchStatus)
+//		if err != nil {
+//			joinResult.err = err
+//			return false, joinResult
+//		}
+//		for i := range outerMatchStatus {
+//			if outerMatchStatus[i] == outerRowMatched {
+//				e.outerMatchedStatus[rowsPtrs[rowIdx+i].ChkIdx].Set(int(rowsPtrs[rowIdx+i].RowIdx))
+//			}
+//		}
+//		rowIdx += len(outerMatchStatus)
+//		if joinResult.chk.IsFull() {
+//			e.joinResultCh <- joinResult
+//			ok, joinResult := e.getNewJoinResult(workerID)
+//			if !ok {
+//				return false, joinResult
+//			}
+//		}
+//	}
+//	return true, joinResult
+//}
 
-	iter := chunk.NewIterator4Slice(buildSideRows)
-	var outerMatchStatus []outerRowStatusFlag
-	rowIdx := 0
-	for iter.Begin(); iter.Current() != iter.End(); {
-		outerMatchStatus, err = e.joiners[workerID].tryToMatchOuters(iter, probeSideRow, joinResult.chk, outerMatchStatus)
-		if err != nil {
-			joinResult.err = err
-			return false, joinResult
-		}
-		for i := range outerMatchStatus {
-			if outerMatchStatus[i] == outerRowMatched {
-				e.outerMatchedStatus[rowsPtrs[rowIdx+i].ChkIdx].Set(int(rowsPtrs[rowIdx+i].RowIdx))
-			}
-		}
-		rowIdx += len(outerMatchStatus)
-		if joinResult.chk.IsFull() {
-			e.joinResultCh <- joinResult
-			ok, joinResult := e.getNewJoinResult(workerID)
-			if !ok {
-				return false, joinResult
-			}
-		}
-	}
-	return true, joinResult
-}
 func (e *MultiwayHashJoinExec) joinMatchedProbeSideRow2Chunk(workerID uint, probeKey uint64, probeSideRow chunk.Row, hCtx *hashContext,
-	joinResult *hashjoinWorkerResult) (bool, *hashjoinWorkerResult) {
-	buildSideRows, _, err := e.rowContainer.GetMatchedRowsAndPtrs(probeKey, probeSideRow, hCtx)
-	if err != nil {
-		joinResult.err = err
-		return false, joinResult
+	buildSideRows [][]chunk.Row, joinResult *hashjoinWorkerResult) (bool, *hashjoinWorkerResult) {
+	numRows := make([]int, 0, e.numBuildExec + 1)
+	for b := e.numBuildExec - 1; 0 <= b; b-- {
+		numRows[b] = numRows[b + 1] * len(buildSideRows[b])
 	}
-	if len(buildSideRows) == 0 {
-		e.joiners[workerID].onMissMatch(false, probeSideRow, joinResult.chk)
-		return true, joinResult
+	for i := 0; i < numRows[0]; i++ {
+		for b := 0; b < e.numBuildExec; b++ {
+
+		}
 	}
-	iter := chunk.NewIterator4Slice(buildSideRows)
 	hasMatch, hasNull := false, false
 	for iter.Begin(); iter.Current() != iter.End(); {
-		matched, isNull, err := e.joiners[workerID].tryToMatchInners(probeSideRow, iter, joinResult.chk)
+		matched, isNull, err := e.joiners[0][workerID].tryToMatchInners(probeSideRow, iter, joinResult.chk)
 		if err != nil {
 			joinResult.err = err
 			return false, joinResult
@@ -637,53 +648,59 @@ func (e *MultiwayHashJoinExec) join2Chunk(workerID uint, probeSideChk *chunk.Chu
 		}
 	}
 
+	matchedRows := make([][]chunk.Row, 0, e.numBuildExec)
 	for i := range selected {
-		if !selected[i] || hCtx.hasNull[i] { // process unmatched probe side rows
-			e.joiners[workerID].onMissMatch(false, probeSideChk.GetRow(i), joinResult.chk)
-		} else { // process matched probe side rows
-			probeKey, probeRow := hCtx.hashVals[i].Sum64(), probeSideChk.GetRow(i)
-			ok, joinResult = e.joinMatchedProbeSideRow2Chunk(workerID, probeKey, probeRow, hCtx, joinResult)
-			if !ok {
-				return false, joinResult
+		if selected[i] {
+			for b, rc := range e.rowContainer {
+				matched, _, err := rc.GetMatchedRowsAndPtrs(hCtx.hashVals[i].Sum64(), probeSideChk.GetRow(i), hCtx)
+				matchedRows[b] = matched
+				if err != nil {
+					joinResult.err = err;
+					return false, joinResult
+				}
+				if len(matched) == 0 {
+					selected[i] = false
+					break
+				}
 			}
-		}
-		if joinResult.chk.IsFull() {
-			e.joinResultCh <- joinResult
-			ok, joinResult = e.getNewJoinResult(workerID)
-			if !ok {
-				return false, joinResult
+			if selected[i] {
+				probeKey, probeRow := hCtx.hashVals[i].Sum64(), probeSideChk.GetRow(i)
+				ok, joinResult = e.joinMatchedProbeSideRow2Chunk(workerID, probeKey, probeRow, hCtx, matchedRows, joinResult)
+				if !ok {
+					return false, joinResult
+				}
 			}
 		}
 	}
 	return true, joinResult
 }
 
-// join2ChunkForOuterHashJoin joins chunks when using the outer to build a hash table (refer to outer hash join)
-func (e *MultiwayHashJoinExec) join2ChunkForOuterHashJoin(workerID uint, probeSideChk *chunk.Chunk, hCtx *hashContext, joinResult *hashjoinWorkerResult) (ok bool, _ *hashjoinWorkerResult) {
-	hCtx.initHash(probeSideChk.NumRows())
-	for _, i := range hCtx.keyColIdx {
-		err := codec.HashChunkColumns(e.rowContainer[0].sc, hCtx.hashVals, probeSideChk, hCtx.allTypes[i], i, hCtx.buf, hCtx.hasNull)
-		if err != nil {
-			joinResult.err = err
-			return false, joinResult
-		}
-	}
-	for i := 0; i < probeSideChk.NumRows(); i++ {
-		probeKey, probeRow := hCtx.hashVals[i].Sum64(), probeSideChk.GetRow(i)
-		ok, joinResult = e.joinMatchedProbeSideRow2ChunkForOuterHashJoin(workerID, probeKey, probeRow, hCtx, joinResult)
-		if !ok {
-			return false, joinResult
-		}
-		if joinResult.chk.IsFull() {
-			e.joinResultCh <- joinResult
-			ok, joinResult = e.getNewJoinResult(workerID)
-			if !ok {
-				return false, joinResult
-			}
-		}
-	}
-	return true, joinResult
-}
+//// join2ChunkForOuterHashJoin joins chunks when using the outer to build a hash table (refer to outer hash join)
+//func (e *MultiwayHashJoinExec) join2ChunkForOuterHashJoin(workerID uint, probeSideChk *chunk.Chunk, hCtx *hashContext, joinResult *hashjoinWorkerResult) (ok bool, _ *hashjoinWorkerResult) {
+//	hCtx.initHash(probeSideChk.NumRows())
+//	for _, i := range hCtx.keyColIdx {
+//		err := codec.HashChunkColumns(e.rowContainer[0].sc, hCtx.hashVals, probeSideChk, hCtx.allTypes[i], i, hCtx.buf, hCtx.hasNull)
+//		if err != nil {
+//			joinResult.err = err
+//			return false, joinResult
+//		}
+//	}
+//	for i := 0; i < probeSideChk.NumRows(); i++ {
+//		probeKey, probeRow := hCtx.hashVals[i].Sum64(), probeSideChk.GetRow(i)
+//		ok, joinResult = e.joinMatchedProbeSideRow2ChunkForOuterHashJoin(workerID, probeKey, probeRow, hCtx, joinResult)
+//		if !ok {
+//			return false, joinResult
+//		}
+//		if joinResult.chk.IsFull() {
+//			e.joinResultCh <- joinResult
+//			ok, joinResult = e.getNewJoinResult(workerID)
+//			if !ok {
+//				return false, joinResult
+//			}
+//		}
+//	}
+//	return true, joinResult
+//}
 
 // Next implements the Executor Next interface.
 // hash join constructs the result following these steps:
