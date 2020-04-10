@@ -1647,3 +1647,261 @@ func BenchmarkSortExec(b *testing.B) {
 		})
 	}
 }
+
+func prepare4LeftDeepHashJoin(testCase *hashJoinTestCase, factDS Executor, dimDS []Executor) []*HashJoinExec {
+	// left is probeSide, right is buildSide
+	leftExec := factDS
+	execs := make([]*HashJoinExec, len(dimDS))
+	for i, rightExec := range dimDS {
+		joinSchema := expression.NewSchema()
+		leftCols := leftExec.Schema().Columns
+		rightCols := rightExec.Schema().Columns
+		joinSchema.Append(leftCols...)
+		joinSchema.Append(rightCols...)
+		probeKeys := make([]*expression.Column, 1)
+		joinKeys := make([]*expression.Column, 1)
+		probeKeys[0] = leftCols[i+1]
+		joinKeys[0] = rightCols[0]
+		e := &HashJoinExec{
+			baseExecutor:      newBaseExecutor(testCase.ctx, joinSchema, stringutil.StringerStr("HashJoin"), leftExec, rightExec),
+			concurrency:       uint(testCase.concurrency),
+			joinType:          testCase.joinType, // 0 for InnerJoin, 1 for LeftOutersJoin, 2 for RightOuterJoin
+			isOuterJoin:       false,
+			buildKeys:         joinKeys,
+			probeKeys:         probeKeys,
+			buildSideExec:     rightExec,
+			probeSideExec:     leftExec,
+			buildSideEstCount: float64(testCase.rows),
+			useOuterToBuild:   false,
+		}
+		childrenUsedSchema := markChildrenUsedCols(e.Schema(), e.children[0].Schema(), e.children[1].Schema())
+		defaultValues := make([]types.Datum, e.buildSideExec.Schema().Len())
+		lhsTypes, rhsTypes := retTypes(leftExec), retTypes(rightExec)
+		e.joiners = make([]joiner, e.concurrency)
+		for i := uint(0); i < e.concurrency; i++ {
+			e.joiners[i] = newJoiner(testCase.ctx, e.joinType, false, defaultValues,
+				nil, lhsTypes, rhsTypes, childrenUsedSchema)
+		}
+		memLimit := int64(-1)
+		if testCase.disk {
+			memLimit = 1
+		}
+		t := memory.NewTracker(stringutil.StringerStr("root of prepare4HashJoin"), memLimit)
+		t.SetActionOnExceed(nil)
+		t2 := disk.NewTracker(stringutil.StringerStr("root of prepare4HashJoin"), -1)
+		e.ctx.GetSessionVars().StmtCtx.MemTracker = t
+		e.ctx.GetSessionVars().StmtCtx.DiskTracker = t2
+		execs[i] = e
+		leftExec = e
+	}
+	return execs
+}
+
+func fieldsToCols(ctx sessionctx.Context, cols []*types.FieldType) []*expression.Column {
+	ret := make([]*expression.Column, 0)
+	for i, t := range cols {
+		col := &expression.Column{Index: i, RetType: t, UniqueID: ctx.GetSessionVars().AllocPlanColumnID()}
+		ret = append(ret, col)
+	}
+	return ret
+}
+
+func buildDimDS(ctx sessionctx.Context, rows int) Executor {
+	dim1DSColFields := []*types.FieldType{
+		types.NewFieldType(mysql.TypeLonglong), // primary id of dim1 (join key)
+		types.NewFieldType(mysql.TypeLonglong), // dim1 data
+	}
+	dim1DSOpt := mockDataSourceParameters{
+		rows: rows,
+		ctx:  ctx,
+		genDataFunc: func(row int, typ *types.FieldType) interface{} {
+			switch typ.Tp {
+			case mysql.TypeLong, mysql.TypeLonglong:
+				return int64(row)
+			case mysql.TypeVarString:
+				return wideString
+			case mysql.TypeDouble:
+				return float64(row)
+			default:
+				panic("not implement" + fmt.Sprintln(typ))
+			}
+		},
+		schema: expression.NewSchema(fieldsToCols(ctx, dim1DSColFields)...),
+	}
+	dim1DS := buildMockDataSource(dim1DSOpt)
+	return dim1DS
+}
+
+func BenchmarkLeftDeepHashJoinExec(b *testing.B) {
+	cols := []*types.FieldType{
+		types.NewFieldType(mysql.TypeLonglong),
+		types.NewFieldType(mysql.TypeLonglong),
+	}
+	ctx := mock.NewContext()
+	ctx.GetSessionVars().InitChunkSize = variable.DefInitChunkSize
+	ctx.GetSessionVars().MaxChunkSize = variable.DefMaxChunkSize
+	ctx.GetSessionVars().StmtCtx.MemTracker = memory.NewTracker(nil, -1)
+	ctx.GetSessionVars().StmtCtx.DiskTracker = disk.NewTracker(nil, -1)
+	ctx.GetSessionVars().IndexLookupJoinConcurrency = 4
+	tc := &hashJoinTestCase{rows: 10, concurrency: 4, ctx: ctx, keyIdx: []int{0, 1}, rawData: wideString}
+	tc.cols = cols
+	tc.useOuterToBuild = false
+	tc.joinType = core.InnerJoin
+	factDSColFields := []*types.FieldType{
+		types.NewFieldType(mysql.TypeLonglong), // primary id
+		types.NewFieldType(mysql.TypeLonglong), // join key for dim1
+	}
+	factDSOpt := mockDataSourceParameters{
+		rows: 10000,
+		ctx:  ctx,
+		genDataFunc: func(row int, typ *types.FieldType) interface{} {
+			switch typ.Tp {
+			case mysql.TypeLong, mysql.TypeLonglong:
+				return int64(row)
+			case mysql.TypeVarString:
+				return tc.rawData
+			case mysql.TypeDouble:
+				return float64(row)
+			default:
+				panic("not implement")
+			}
+		},
+		schema: expression.NewSchema(fieldsToCols(ctx, factDSColFields)...),
+	}
+	factDS := buildMockDataSource(factDSOpt)
+
+	dimDSs := make([]Executor, 0)
+	dimDSs = append(dimDSs, buildDimDS(ctx, 10000), buildDimDS(ctx, 10000), buildDimDS(ctx, 10000), buildDimDS(ctx, 10000), buildDimDS(ctx, 10))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		e := prepare4LeftDeepHashJoin(tc, factDS, dimDSs)[len(dimDSs) - 1]
+		tmpCtx := context.Background()
+		chk := newFirstChunk(e)
+		factDS.prepareChunks()
+		for _, dimDS := range dimDSs {
+			dimDS.(*mockDataSource).prepareChunks()
+		}
+
+		totalRow := 0
+		b.StartTimer()
+		if err := e.Open(tmpCtx); err != nil {
+			b.Fatal(err)
+		}
+		for {
+			if err := e.Next(tmpCtx, chk); err != nil {
+				b.Fatal(err)
+			}
+			if chk.NumRows() == 0 {
+				break
+			}
+			totalRow += chk.NumRows()
+		}
+
+		if err := e.Close(); err != nil {
+			b.Fatal(err)
+		}
+		b.StopTimer()
+		if totalRow == 0 {
+			b.Fatal("totalRow == 0")
+		}
+	}
+}
+
+func prepare4MultiwayHashJoin(tc *hashJoinTestCase, factDS Executor, dimDS []Executor) Executor {
+	leftDeepExecs := prepare4LeftDeepHashJoin(tc, factDS, dimDS)
+	numDim := len(dimDS)
+	probeKeys := make([][]*expression.Column, numDim)
+	probeTypes := make([][]*types.FieldType, numDim)
+	factDSCols := factDS.Schema().Columns
+	for i := 0; i < len(dimDS); i++ {
+		probeKeys[i] = make([]*expression.Column, 1)
+		probeKeys[i][0] = factDSCols[i + 1]
+		probeTypes[i] = make([]*types.FieldType, 1)
+		probeTypes[i][0] = factDSCols[i + 1].RetType
+	}
+	e := &MultiwayHashJoinExec{
+		joinExecutors: leftDeepExecs,
+		probeSideExec: factDS,
+		buildSideExec: dimDS,
+		probeKeys: probeKeys,
+		probeTypes: probeTypes,
+	}
+	return e
+}
+
+func BenchmarkMultiwayHashJoinExec(b *testing.B) {
+	cols := []*types.FieldType{
+		types.NewFieldType(mysql.TypeLonglong),
+		types.NewFieldType(mysql.TypeLonglong),
+	}
+	ctx := mock.NewContext()
+	ctx.GetSessionVars().InitChunkSize = variable.DefInitChunkSize
+	ctx.GetSessionVars().MaxChunkSize = variable.DefMaxChunkSize
+	ctx.GetSessionVars().StmtCtx.MemTracker = memory.NewTracker(nil, -1)
+	ctx.GetSessionVars().StmtCtx.DiskTracker = disk.NewTracker(nil, -1)
+	ctx.GetSessionVars().IndexLookupJoinConcurrency = 4
+	tc := &hashJoinTestCase{rows: 10, concurrency: 4, ctx: ctx, keyIdx: []int{0, 1}, rawData: wideString}
+	tc.cols = cols
+	tc.useOuterToBuild = false
+	tc.joinType = core.InnerJoin
+	factDSColFields := []*types.FieldType{
+		types.NewFieldType(mysql.TypeLonglong), // primary id
+		types.NewFieldType(mysql.TypeLonglong), // join key for dim1
+	}
+	factDSOpt := mockDataSourceParameters{
+		rows: 10000,
+		ctx:  ctx,
+		genDataFunc: func(row int, typ *types.FieldType) interface{} {
+			switch typ.Tp {
+			case mysql.TypeLong, mysql.TypeLonglong:
+				return int64(row)
+			case mysql.TypeVarString:
+				return tc.rawData
+			case mysql.TypeDouble:
+				return float64(row)
+			default:
+				panic("not implement")
+			}
+		},
+		schema: expression.NewSchema(fieldsToCols(ctx, factDSColFields)...),
+	}
+	factDS := buildMockDataSource(factDSOpt)
+
+	dimDSs := make([]Executor, 0)
+	dimDSs = append(dimDSs, buildDimDS(ctx, 10000), buildDimDS(ctx, 10000), buildDimDS(ctx, 10000), buildDimDS(ctx, 10000), buildDimDS(ctx, 10))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		e := prepare4MultiwayHashJoin(tc, factDS, dimDSs)
+		tmpCtx := context.Background()
+		chk := newFirstChunk(e)
+		factDS.prepareChunks()
+		for _, dimDS := range dimDSs {
+			dimDS.(*mockDataSource).prepareChunks()
+		}
+
+		totalRow := 0
+		b.StartTimer()
+		if err := e.Open(tmpCtx); err != nil {
+			b.Fatal(err)
+		}
+		for {
+			if err := e.Next(tmpCtx, chk); err != nil {
+				b.Fatal(err)
+			}
+			if chk.NumRows() == 0 {
+				break
+			}
+			totalRow += chk.NumRows()
+		}
+
+		if err := e.Close(); err != nil {
+			b.Fatal(err)
+		}
+		b.StopTimer()
+		if totalRow == 0 {
+			b.Fatal("totalRow == 0")
+		}
+	}
+}
