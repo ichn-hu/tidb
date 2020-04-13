@@ -1775,7 +1775,7 @@ func BenchmarkLeftDeepHashJoinExec(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		e := prepare4LeftDeepHashJoin(tc, factDS, dimDSs)[len(dimDSs) - 1]
+		e := prepare4LeftDeepHashJoin(tc, factDS, dimDSs)[len(dimDSs)-1]
 		tmpCtx := context.Background()
 		chk := newFirstChunk(e)
 		factDS.prepareChunks()
@@ -1816,17 +1816,68 @@ func prepare4MultiwayHashJoin(tc *hashJoinTestCase, factDS Executor, dimDS []Exe
 	factDSCols := factDS.Schema().Columns
 	for i := 0; i < len(dimDS); i++ {
 		probeKeys[i] = make([]*expression.Column, 1)
-		probeKeys[i][0] = factDSCols[i + 1]
-		probeTypes[i] = make([]*types.FieldType, 1)
-		probeTypes[i][0] = factDSCols[i + 1].RetType
+		probeKeys[i][0] = factDSCols[i+1]
+		probeTypes[i] = factDS.base().retFieldTypes
+	}
+	estCounts := make([]float64, numDim)
+	for i := 0; i < numDim; i++ {
+		estCounts = append(estCounts, 1000) // TODO: change it
+	}
+	children := make([]Executor, numDim+1)
+	children[0] = factDS
+	for i := 1; i <= numDim; i++ {
+		children[i] = dimDS[i-1]
+	}
+	//joiners := make([][]joiner, numDim)
+	//for i := 0; i < numDim; i++ {
+	//	joiners[i] = leftDeepExecs[i].joiners
+	//}
+	buildKeys := make([][]*expression.Column, numDim)
+	buildTypes := make([][]*types.FieldType, numDim)
+	for i := 0; i < numDim; i++ {
+		buildKeys[i] = make([]*expression.Column, 1)
+		buildKeys[i][0] = dimDS[i].Schema().Columns[0]
+		buildTypes[i] = dimDS[i].base().retFieldTypes
 	}
 	e := &MultiwayHashJoinExec{
-		joinExecutors: leftDeepExecs,
-		probeSideExec: factDS,
-		buildSideExec: dimDS,
-		probeKeys: probeKeys,
-		probeTypes: probeTypes,
+		baseExecutor:      newBaseExecutor(tc.ctx, leftDeepExecs[numDim-1].schema, stringutil.StringerStr("Multiway Join"), children...),
+		joinExecutors:     leftDeepExecs,
+		probeSideExec:     factDS,
+		buildSideExec:     dimDS,
+		probeKeys:         probeKeys,
+		probeTypes:        probeTypes,
+		buildKeys:         buildKeys,
+		buildTypes:        buildTypes,
+		useOuterToBuild:   false,
+		isOuterJoin:       false,
+		joinType:          tc.joinType,
+		concurrency:       uint(tc.concurrency),
+		buildSideEstCount: estCounts,
 	}
+	e.joiners = make([][]joiner, numDim)
+	leftExec := factDS
+	for i := 0; i < numDim; i++ {
+		defaultValues := make([]types.Datum, leftDeepExecs[i].Schema().Len())
+		lhsTypes := retTypes(leftExec)
+		rhsTypes := retTypes(dimDS[i])
+		e.joiners[i] = make([]joiner, e.concurrency)
+		childrenUsedSchema := markChildrenUsedCols(leftDeepExecs[i].Schema(), leftExec.Schema(), dimDS[i].Schema())
+		for j := uint(0); j < e.concurrency; j++ {
+			e.joiners[i][j] = newJoiner(tc.ctx, e.joinType, false, defaultValues,
+				nil, lhsTypes, rhsTypes, childrenUsedSchema)
+		}
+		leftExec = leftDeepExecs[i]
+	}
+	memLimit := int64(-1)
+	if tc.disk {
+		memLimit = 1
+	}
+	t := memory.NewTracker(stringutil.StringerStr("root of prepare4HashJoin"), memLimit)
+	t.SetActionOnExceed(nil)
+	t2 := disk.NewTracker(stringutil.StringerStr("root of prepare4HashJoin"), -1)
+	e.ctx.GetSessionVars().StmtCtx.MemTracker = t
+	e.ctx.GetSessionVars().StmtCtx.DiskTracker = t2
+
 	return e
 }
 
@@ -1845,9 +1896,12 @@ func BenchmarkMultiwayHashJoinExec(b *testing.B) {
 	tc.cols = cols
 	tc.useOuterToBuild = false
 	tc.joinType = core.InnerJoin
+	numDim := 5
 	factDSColFields := []*types.FieldType{
 		types.NewFieldType(mysql.TypeLonglong), // primary id
-		types.NewFieldType(mysql.TypeLonglong), // join key for dim1
+	}
+	for i := 0; i < numDim; i++ {
+		factDSColFields = append(factDSColFields, types.NewFieldType(mysql.TypeLonglong))
 	}
 	factDSOpt := mockDataSourceParameters{
 		rows: 10000,
