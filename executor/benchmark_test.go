@@ -1648,7 +1648,20 @@ func BenchmarkSortExec(b *testing.B) {
 	}
 }
 
-func prepare4LeftDeepHashJoin(testCase *hashJoinTestCase, factDS Executor, dimDS []Executor) []*HashJoinExec {
+type multiwayJoinTestCase struct {
+	expectedRowNum int
+	leftDeep           bool
+	factDSParam        *mockDataSourceParameters
+	dimDSParams        []*mockDataSourceParameters
+	concurrency        int
+	ctx                sessionctx.Context
+	disk               bool
+	useOuterToBuild    bool
+	rawData            string
+	childrenUsedSchema [][]bool
+}
+
+func prepare4LeftDeepHashJoin(testCase *multiwayJoinTestCase, factDS Executor, dimDS []Executor) []*HashJoinExec {
 	// left is probeSide, right is buildSide
 	leftExec := factDS
 	execs := make([]*HashJoinExec, len(dimDS))
@@ -1665,13 +1678,13 @@ func prepare4LeftDeepHashJoin(testCase *hashJoinTestCase, factDS Executor, dimDS
 		e := &HashJoinExec{
 			baseExecutor:      newBaseExecutor(testCase.ctx, joinSchema, stringutil.StringerStr("HashJoin"), leftExec, rightExec),
 			concurrency:       uint(testCase.concurrency),
-			joinType:          testCase.joinType, // 0 for InnerJoin, 1 for LeftOutersJoin, 2 for RightOuterJoin
+			joinType:          core.InnerJoin, // 0 for InnerJoin, 1 for LeftOutersJoin, 2 for RightOuterJoin
 			isOuterJoin:       false,
 			buildKeys:         joinKeys,
 			probeKeys:         probeKeys,
 			buildSideExec:     rightExec,
 			probeSideExec:     leftExec,
-			buildSideEstCount: float64(testCase.rows),
+			buildSideEstCount: float64(testCase.factDSParam.rows),
 			useOuterToBuild:   false,
 		}
 		childrenUsedSchema := markChildrenUsedCols(e.Schema(), e.children[0].Schema(), e.children[1].Schema())
@@ -1706,109 +1719,31 @@ func fieldsToCols(ctx sessionctx.Context, cols []*types.FieldType) []*expression
 	return ret
 }
 
-func buildDimDS(ctx sessionctx.Context, rows int) Executor {
+func buildDS(tc *multiwayJoinTestCase) (factDS Executor, dimDSs []Executor) {
+	numDim := len(tc.dimDSParams)
+	factDSColFields := []*types.FieldType{
+		types.NewFieldType(mysql.TypeLonglong), // primary id
+	}
+	for i := 0; i < numDim; i++ {
+		// join key for each dim
+		factDSColFields = append(factDSColFields, types.NewFieldType(mysql.TypeLonglong))
+	}
+	tc.factDSParam.schema = expression.NewSchema(fieldsToCols(tc.ctx, factDSColFields)...)
+	factDS = buildMockDataSource(*tc.factDSParam)
+
+	dimDSs = make([]Executor, numDim)
 	dim1DSColFields := []*types.FieldType{
 		types.NewFieldType(mysql.TypeLonglong), // primary id of dim1 (join key)
 		types.NewFieldType(mysql.TypeLonglong), // dim1 data
 	}
-	dim1DSOpt := mockDataSourceParameters{
-		rows: rows,
-		ctx:  ctx,
-		genDataFunc: func(row int, typ *types.FieldType) interface{} {
-			switch typ.Tp {
-			case mysql.TypeLong, mysql.TypeLonglong:
-				return int64(row)
-			case mysql.TypeVarString:
-				return wideString
-			case mysql.TypeDouble:
-				return float64(row)
-			default:
-				panic("not implement" + fmt.Sprintln(typ))
-			}
-		},
-		schema: expression.NewSchema(fieldsToCols(ctx, dim1DSColFields)...),
+	for i := 0; i < numDim; i++ {
+		tc.dimDSParams[i].schema = expression.NewSchema(fieldsToCols(tc.ctx, dim1DSColFields)...)
+		dimDSs[i] = buildMockDataSource(*tc.dimDSParams[i])
 	}
-	dim1DS := buildMockDataSource(dim1DSOpt)
-	return dim1DS
+	return
 }
 
-func BenchmarkLeftDeepHashJoinExec(b *testing.B) {
-	cols := []*types.FieldType{
-		types.NewFieldType(mysql.TypeLonglong),
-		types.NewFieldType(mysql.TypeLonglong),
-	}
-	ctx := mock.NewContext()
-	ctx.GetSessionVars().InitChunkSize = variable.DefInitChunkSize
-	ctx.GetSessionVars().MaxChunkSize = variable.DefMaxChunkSize
-	ctx.GetSessionVars().StmtCtx.MemTracker = memory.NewTracker(nil, -1)
-	ctx.GetSessionVars().StmtCtx.DiskTracker = disk.NewTracker(nil, -1)
-	ctx.GetSessionVars().IndexLookupJoinConcurrency = 4
-	tc := &hashJoinTestCase{rows: 10, concurrency: 4, ctx: ctx, keyIdx: []int{0, 1}, rawData: wideString}
-	tc.cols = cols
-	tc.useOuterToBuild = false
-	tc.joinType = core.InnerJoin
-	factDSColFields := []*types.FieldType{
-		types.NewFieldType(mysql.TypeLonglong), // primary id
-		types.NewFieldType(mysql.TypeLonglong), // join key for dim1
-	}
-	factDSOpt := mockDataSourceParameters{
-		rows: 10000,
-		ctx:  ctx,
-		genDataFunc: func(row int, typ *types.FieldType) interface{} {
-			switch typ.Tp {
-			case mysql.TypeLong, mysql.TypeLonglong:
-				return int64(row)
-			case mysql.TypeVarString:
-				return tc.rawData
-			case mysql.TypeDouble:
-				return float64(row)
-			default:
-				panic("not implement")
-			}
-		},
-		schema: expression.NewSchema(fieldsToCols(ctx, factDSColFields)...),
-	}
-	factDS := buildMockDataSource(factDSOpt)
-
-	dimDSs := make([]Executor, 0)
-	dimDSs = append(dimDSs, buildDimDS(ctx, 10000), buildDimDS(ctx, 10000), buildDimDS(ctx, 10000), buildDimDS(ctx, 10000), buildDimDS(ctx, 10))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		e := prepare4LeftDeepHashJoin(tc, factDS, dimDSs)[len(dimDSs)-1]
-		tmpCtx := context.Background()
-		chk := newFirstChunk(e)
-		factDS.prepareChunks()
-		for _, dimDS := range dimDSs {
-			dimDS.(*mockDataSource).prepareChunks()
-		}
-
-		totalRow := 0
-		b.StartTimer()
-		if err := e.Open(tmpCtx); err != nil {
-			b.Fatal(err)
-		}
-		for {
-			if err := e.Next(tmpCtx, chk); err != nil {
-				b.Fatal(err)
-			}
-			if chk.NumRows() == 0 {
-				break
-			}
-			totalRow += chk.NumRows()
-		}
-
-		if err := e.Close(); err != nil {
-			b.Fatal(err)
-		}
-		b.StopTimer()
-		if totalRow == 0 {
-			b.Fatal("totalRow == 0")
-		}
-	}
-}
-
-func prepare4MultiwayHashJoin(tc *hashJoinTestCase, factDS Executor, dimDS []Executor) Executor {
+func prepare4MultiwayHashJoin(tc *multiwayJoinTestCase, factDS Executor, dimDS []Executor) Executor {
 	leftDeepExecs := prepare4LeftDeepHashJoin(tc, factDS, dimDS)
 	numDim := len(dimDS)
 	probeKeys := make([][]*expression.Column, numDim)
@@ -1821,17 +1756,13 @@ func prepare4MultiwayHashJoin(tc *hashJoinTestCase, factDS Executor, dimDS []Exe
 	}
 	estCounts := make([]float64, numDim)
 	for i := 0; i < numDim; i++ {
-		estCounts = append(estCounts, 1000) // TODO: change it
+		estCounts = append(estCounts, float64(tc.dimDSParams[i].rows))
 	}
 	children := make([]Executor, numDim+1)
 	children[0] = factDS
 	for i := 1; i <= numDim; i++ {
 		children[i] = dimDS[i-1]
 	}
-	//joiners := make([][]joiner, numDim)
-	//for i := 0; i < numDim; i++ {
-	//	joiners[i] = leftDeepExecs[i].joiners
-	//}
 	buildKeys := make([][]*expression.Column, numDim)
 	buildTypes := make([][]*types.FieldType, numDim)
 	for i := 0; i < numDim; i++ {
@@ -1850,7 +1781,7 @@ func prepare4MultiwayHashJoin(tc *hashJoinTestCase, factDS Executor, dimDS []Exe
 		buildTypes:        buildTypes,
 		useOuterToBuild:   false,
 		isOuterJoin:       false,
-		joinType:          tc.joinType,
+		joinType:          core.InnerJoin,
 		concurrency:       uint(tc.concurrency),
 		buildSideEstCount: estCounts,
 	}
@@ -1881,56 +1812,31 @@ func prepare4MultiwayHashJoin(tc *hashJoinTestCase, factDS Executor, dimDS []Exe
 	return e
 }
 
-func BenchmarkMultiwayHashJoinExec(b *testing.B) {
-	cols := []*types.FieldType{
-		types.NewFieldType(mysql.TypeLonglong),
-		types.NewFieldType(mysql.TypeLonglong),
-	}
+func benchmarkMultiwayHashJoinExec(b *testing.B, tc *multiwayJoinTestCase) {
 	ctx := mock.NewContext()
 	ctx.GetSessionVars().InitChunkSize = variable.DefInitChunkSize
 	ctx.GetSessionVars().MaxChunkSize = variable.DefMaxChunkSize
 	ctx.GetSessionVars().StmtCtx.MemTracker = memory.NewTracker(nil, -1)
 	ctx.GetSessionVars().StmtCtx.DiskTracker = disk.NewTracker(nil, -1)
 	ctx.GetSessionVars().IndexLookupJoinConcurrency = 4
-	tc := &hashJoinTestCase{rows: 10, concurrency: 4, ctx: ctx, keyIdx: []int{0, 1}, rawData: wideString}
-	tc.cols = cols
-	tc.useOuterToBuild = false
-	tc.joinType = core.InnerJoin
-	numDim := 5
-	factDSColFields := []*types.FieldType{
-		types.NewFieldType(mysql.TypeLonglong), // primary id
+	tc.ctx = ctx
+	tc.factDSParam.ctx = ctx
+	for _, param := range tc.dimDSParams {
+		param.ctx = ctx
 	}
-	for i := 0; i < numDim; i++ {
-		factDSColFields = append(factDSColFields, types.NewFieldType(mysql.TypeLonglong))
-	}
-	factDSOpt := mockDataSourceParameters{
-		rows: 10000,
-		ctx:  ctx,
-		genDataFunc: func(row int, typ *types.FieldType) interface{} {
-			switch typ.Tp {
-			case mysql.TypeLong, mysql.TypeLonglong:
-				return int64(row)
-			case mysql.TypeVarString:
-				return tc.rawData
-			case mysql.TypeDouble:
-				return float64(row)
-			default:
-				panic("not implement")
-			}
-		},
-		schema: expression.NewSchema(fieldsToCols(ctx, factDSColFields)...),
-	}
-	factDS := buildMockDataSource(factDSOpt)
-
-	dimDSs := make([]Executor, 0)
-	dimDSs = append(dimDSs, buildDimDS(ctx, 10000), buildDimDS(ctx, 10000), buildDimDS(ctx, 10000), buildDimDS(ctx, 10000), buildDimDS(ctx, 10))
+	factDS, dimDSs := buildDS(tc)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		e := prepare4MultiwayHashJoin(tc, factDS, dimDSs)
+		var e Executor
+		if tc.leftDeep {
+			e = prepare4LeftDeepHashJoin(tc, factDS, dimDSs)[len(dimDSs)-1]
+		} else {
+			e = prepare4MultiwayHashJoin(tc, factDS, dimDSs)
+		}
 		tmpCtx := context.Background()
 		chk := newFirstChunk(e)
-		factDS.prepareChunks()
+		factDS.(*mockDataSource).prepareChunks()
 		for _, dimDS := range dimDSs {
 			dimDS.(*mockDataSource).prepareChunks()
 		}
@@ -1954,8 +1860,425 @@ func BenchmarkMultiwayHashJoinExec(b *testing.B) {
 			b.Fatal(err)
 		}
 		b.StopTimer()
-		if totalRow == 0 {
-			b.Fatal("totalRow == 0")
+		//fmt.Println(totalRow)
+		if totalRow != tc.expectedRowNum {
+			b.Fatal(fmt.Sprintf("totalRow(%d) != expected(%d)", totalRow, tc.expectedRowNum))
 		}
 	}
+}
+
+func BenchmarkMultiwayHashJoinExec(b *testing.B) {
+	genGenDataFunc := func(start, repeat int) func(int, *types.FieldType) interface{} {
+		return func(row int, typ *types.FieldType) interface{} {
+			val := start + (row / repeat)
+			switch typ.Tp {
+			case mysql.TypeLong, mysql.TypeLonglong:
+				return int64(val)
+			case mysql.TypeDouble:
+				return float64(val)
+			default:
+				panic("not implement")
+			}
+		}
+	}
+	b.Run(fmt.Sprintf("bench case 1 leftdeep"), func(b *testing.B) {
+		benchmarkMultiwayHashJoinExec(b, &multiwayJoinTestCase{
+			leftDeep: true,
+			expectedRowNum: 1e5,
+			factDSParam: &mockDataSourceParameters{
+				rows:        1e5,
+				genDataFunc: genGenDataFunc(0, 1),
+			},
+			dimDSParams: []*mockDataSourceParameters{
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+			},
+			concurrency:     4,
+			disk:            false,
+			useOuterToBuild: false,
+		})
+	})
+	b.Run(fmt.Sprintf("bench case 1 multiway"), func(b *testing.B) {
+		benchmarkMultiwayHashJoinExec(b, &multiwayJoinTestCase{
+			leftDeep: false,
+			expectedRowNum: 1e5,
+			factDSParam: &mockDataSourceParameters{
+				rows:        1e5,
+				genDataFunc: genGenDataFunc(0, 1),
+			},
+			dimDSParams: []*mockDataSourceParameters{
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+			},
+			concurrency:     4,
+			disk:            false,
+			useOuterToBuild: false,
+		})
+	})
+	b.Run(fmt.Sprintf("bench case 2 leftdeep worst"), func(b *testing.B) {
+		benchmarkMultiwayHashJoinExec(b, &multiwayJoinTestCase{
+			leftDeep: true,
+			expectedRowNum: 10,
+			factDSParam: &mockDataSourceParameters{
+				rows:        1e5,
+				genDataFunc: genGenDataFunc(0, 1),
+			},
+			dimDSParams: []*mockDataSourceParameters{
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        10,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+			},
+			concurrency:     4,
+			disk:            false,
+			useOuterToBuild: false,
+		})
+	})
+	b.Run(fmt.Sprintf("bench case 2 leftdeep best"), func(b *testing.B) {
+		benchmarkMultiwayHashJoinExec(b, &multiwayJoinTestCase{
+			leftDeep: true,
+			expectedRowNum: 10,
+			factDSParam: &mockDataSourceParameters{
+				rows:        1e5,
+				genDataFunc: genGenDataFunc(0, 1),
+			},
+			dimDSParams: []*mockDataSourceParameters{
+				{
+					rows:        10,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+			},
+			concurrency:     4,
+			disk:            false,
+			useOuterToBuild: false,
+		})
+	})
+	b.Run(fmt.Sprintf("bench case 2 multiway worst"), func(b *testing.B) {
+		benchmarkMultiwayHashJoinExec(b, &multiwayJoinTestCase{
+			leftDeep: false,
+			expectedRowNum: 10,
+			factDSParam: &mockDataSourceParameters{
+				rows:        1e5,
+				genDataFunc: genGenDataFunc(0, 1),
+			},
+			dimDSParams: []*mockDataSourceParameters{
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        10,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+			},
+			concurrency:     4,
+			disk:            false,
+			useOuterToBuild: false,
+		})
+	})
+	b.Run(fmt.Sprintf("bench case 2 multiway best"), func(b *testing.B) {
+		benchmarkMultiwayHashJoinExec(b, &multiwayJoinTestCase{
+			leftDeep: false,
+			expectedRowNum: 10,
+			factDSParam: &mockDataSourceParameters{
+				rows:        1e5,
+				genDataFunc: genGenDataFunc(0, 1),
+			},
+			dimDSParams: []*mockDataSourceParameters{
+				{
+					rows:        10,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+			},
+			concurrency:     4,
+			disk:            false,
+			useOuterToBuild: false,
+		})
+	})
+
+	b.Run(fmt.Sprintf("bench case 3 leftdeep worst"), func(b *testing.B) {
+		benchmarkMultiwayHashJoinExec(b, &multiwayJoinTestCase{
+			leftDeep: true,
+			expectedRowNum: 10 * 2 * 2 * 2 * 2,
+			factDSParam: &mockDataSourceParameters{
+				rows:        1e5,
+				genDataFunc: genGenDataFunc(0, 1),
+			},
+			dimDSParams: []*mockDataSourceParameters{
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        10,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+			},
+			concurrency:     4,
+			disk:            false,
+			useOuterToBuild: false,
+		})
+	})
+	b.Run(fmt.Sprintf("bench case 3 leftdeep best"), func(b *testing.B) {
+		benchmarkMultiwayHashJoinExec(b, &multiwayJoinTestCase{
+			leftDeep: true,
+			expectedRowNum: 10 * 2 * 2 * 2 * 2,
+			factDSParam: &mockDataSourceParameters{
+				rows:        1e5,
+				genDataFunc: genGenDataFunc(0, 1),
+			},
+			dimDSParams: []*mockDataSourceParameters{
+				{
+					rows:        10,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+			},
+			concurrency:     4,
+			disk:            false,
+			useOuterToBuild: false,
+		})
+	})
+	b.Run(fmt.Sprintf("bench case 3 multiway worst"), func(b *testing.B) {
+		benchmarkMultiwayHashJoinExec(b, &multiwayJoinTestCase{
+			leftDeep: false,
+			expectedRowNum: 10 * 2 * 2 * 2 * 2,
+			factDSParam: &mockDataSourceParameters{
+				rows:        1e5,
+				genDataFunc: genGenDataFunc(0, 1),
+			},
+			dimDSParams: []*mockDataSourceParameters{
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        10,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+			},
+			concurrency:     4,
+			disk:            false,
+			useOuterToBuild: false,
+		})
+	})
+	b.Run(fmt.Sprintf("bench case 3 multiway best"), func(b *testing.B) {
+		benchmarkMultiwayHashJoinExec(b, &multiwayJoinTestCase{
+			leftDeep: false,
+			expectedRowNum: 10 * 2 * 2 * 2 * 2,
+			factDSParam: &mockDataSourceParameters{
+				rows:        1e5,
+				genDataFunc: genGenDataFunc(0, 1),
+			},
+			dimDSParams: []*mockDataSourceParameters{
+
+				{
+					rows:        10,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(0, 2),
+				},
+			},
+			concurrency:     4,
+			disk:            false,
+			useOuterToBuild: false,
+		})
+	})
+	b.Run(fmt.Sprintf("bench case 4 leftdeep"), func(b *testing.B) {
+		overlap := 10000
+		benchmarkMultiwayHashJoinExec(b, &multiwayJoinTestCase{
+			leftDeep: true,
+			expectedRowNum: overlap,
+			factDSParam: &mockDataSourceParameters{
+				rows:        1e5,
+				genDataFunc: genGenDataFunc(0, 1),
+			},
+			dimDSParams: []*mockDataSourceParameters{
+				{
+					rows:        1e5/2 + overlap,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(1e5/2, 1),
+				},
+			},
+			concurrency:     4,
+			disk:            false,
+			useOuterToBuild: false,
+		})
+	})
+	b.Run(fmt.Sprintf("bench case 4 multiway"), func(b *testing.B) {
+		overlap := 10000
+		benchmarkMultiwayHashJoinExec(b, &multiwayJoinTestCase{
+			leftDeep: false,
+			expectedRowNum: overlap,
+			factDSParam: &mockDataSourceParameters{
+				rows:        1e5,
+				genDataFunc: genGenDataFunc(0, 1),
+			},
+			dimDSParams: []*mockDataSourceParameters{
+				{
+					rows:        1e5/2 + overlap,
+					genDataFunc: genGenDataFunc(0, 1),
+				},
+				{
+					rows:        1e5,
+					genDataFunc: genGenDataFunc(1e5/2, 1),
+				},
+			},
+			concurrency:     4,
+			disk:            false,
+			useOuterToBuild: false,
+		})
+	})
 }

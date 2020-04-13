@@ -15,10 +15,8 @@ package executor
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
-
 	//"fmt"
 	"sync"
 	"sync/atomic"
@@ -378,7 +376,7 @@ func (e *MultiwayHashJoinExec) initializeForProbe() {
 }
 
 func (e *MultiwayHashJoinExec) fetchAndProbeHashTable(ctx context.Context) {
-	fmt.Println("fetchAndProbeHashTable")
+	//fmt.Println("fetchAndProbeHashTable")
 	e.initializeForProbe()
 	e.joinWorkerWaitGroup.Add(1)
 	go util.WithRecovery(func() { e.fetchProbeSideChunks(ctx) }, e.handleProbeSideFetcherPanic)
@@ -505,7 +503,7 @@ func (e *MultiwayHashJoinExec) waitJoinWorkersAndCloseResultChan() {
 }
 
 func (e *MultiwayHashJoinExec) runJoinWorker(workerID uint, probeKeyColIdx [][]int) {
-	fmt.Println("runJoinWorker", workerID)
+	//fmt.Println("runJoinWorker", workerID)
 	var (
 		probeSideResult *chunk.Chunk
 		selected        = make([]bool, 0, chunk.InitialCapacity)
@@ -599,7 +597,7 @@ func (e *MultiwayHashJoinExec) runJoinWorker(workerID uint, probeKeyColIdx [][]i
 
 func (e *MultiwayHashJoinExec) joinMatchedProbeSideRow2Chunk(workerID uint, probeSideRow chunk.Row, hCtxs []*hashContext,
 	buildSideRows [][]chunk.Row, joinResult *hashjoinWorkerResult) (bool, *hashjoinWorkerResult) {
-	fmt.Println("run join", workerID)
+	//fmt.Println("run join", workerID)
 	numRows := make([]int, e.numBuildExec+1)
 	numRows[e.numBuildExec] = 1
 	for b := e.numBuildExec - 1; 0 <= b; b-- {
@@ -609,20 +607,20 @@ func (e *MultiwayHashJoinExec) joinMatchedProbeSideRow2Chunk(workerID uint, prob
 	for i := 0; i < e.numBuildExec; i++ {
 		tmpChks[i] = chunk.New(e.joinExecutors[i].base().retFieldTypes, 1, 1)
 	}
-	fmt.Println("numRows[0]", numRows[0])
+	//fmt.Println("numRows[0]", numRows[0])
 	for i := 0; i < numRows[0]; i++ {
 		lhs := probeSideRow
 		allMatched := true
 		for b := 0; b < e.numBuildExec; b++ {
-			fmt.Println("b", b)
-			rowIdx := i / numRows[b+1]
-			fmt.Println("rowIdx", rowIdx)
-			fmt.Println("len buildSideRows", len(buildSideRows))
+			//fmt.Println("b", b)
+			rowIdx := (i / numRows[b+1]) % len(buildSideRows[b])
+			//fmt.Println("rowIdx", rowIdx)
+			//fmt.Println("len buildSideRows", len(buildSideRows[b]), rowIdx, i, b)
 			iter := chunk.NewIterator4Slice(buildSideRows[b][rowIdx : rowIdx+1])
 			tmpChks[b].Reset()
 			for iter.Begin(); iter.Current() != iter.End(); {
 				matched, _, err := e.joiners[b][workerID].tryToMatchInners(lhs, iter, tmpChks[b])
-				fmt.Println(err)
+				//fmt.Println(err)
 				if err != nil {
 					joinResult.err = err
 					return false, joinResult
@@ -635,15 +633,15 @@ func (e *MultiwayHashJoinExec) joinMatchedProbeSideRow2Chunk(workerID uint, prob
 			if !allMatched {
 				break
 			}
-			fmt.Println("before")
+			//fmt.Println("before")
 			lhs = tmpChks[b].GetRow(0)
-			fmt.Println("after")
+			//fmt.Println("after")
 		}
-		fmt.Println("allMatched", allMatched)
+		//fmt.Println("allMatched", allMatched)
 		if allMatched {
-			fmt.Println("joinResult.chk", joinResult.chk.NumCols())
+			//fmt.Println("joinResult.chk", joinResult.chk.NumCols())
 			joinResult.chk.AppendRow(lhs)
-			fmt.Println("appended")
+			//fmt.Println("appended")
 			if joinResult.chk.IsFull() {
 				e.joinResultCh <- joinResult
 				ok, joinResult := e.getNewJoinResult(workerID)
@@ -705,7 +703,7 @@ func (e *MultiwayHashJoinExec) join2Chunk(workerID uint, probeSideChk *chunk.Chu
 				}
 			}
 			if selected[i] {
-				fmt.Println("selected", i)
+				//fmt.Println("selected", i)
 				probeRow := probeSideChk.GetRow(i)
 				ok, joinResult = e.joinMatchedProbeSideRow2Chunk(workerID, probeRow, hCtxs, matchedRows, joinResult)
 				if !ok {
@@ -806,7 +804,7 @@ func (e *MultiwayHashJoinExec) generateFetchAndBuildHashTablePanicHandler(b int)
 }
 
 func (e *MultiwayHashJoinExec) fetchAndBuildHashTable(ctx context.Context, b int) {
-	fmt.Println(b)
+	//fmt.Println(b)
 	// buildSideResultCh transfers build side chunk from build side fetch to build hash table.
 	buildSideResultCh := make(chan *chunk.Chunk, 1)
 	doneCh := make(chan struct{})
