@@ -86,6 +86,7 @@ type MultiwayHashJoinExec struct {
 	buildKeys         [][]*expression.Column
 	buildTypes        [][]*types.FieldType
 	rowContainer      []*hashRowContainer
+	tmpChks [][]*chunk.Chunk
 
 	// We build individual joiner for each join worker when use chunk-based
 	// execution, to avoid the concurrency of joiner.chk and joiner.selected.
@@ -391,9 +392,14 @@ func (e *MultiwayHashJoinExec) fetchAndProbeHashTable(ctx context.Context) {
 
 	// Start e.concurrency join workers to probe hash table and join build side and
 	// probe side rows.
+	e.tmpChks = make([][]*chunk.Chunk, e.concurrency)
 	for i := uint(0); i < e.concurrency; i++ {
 		e.joinWorkerWaitGroup.Add(1)
 		workID := i
+		e.tmpChks[i] = make([]*chunk.Chunk, e.numBuildExec)
+		for j := 0; j < e.numBuildExec; j++ {
+			e.tmpChks[i][j] = chunk.New(e.joinExecutors[j].base().retFieldTypes, 1, 1)
+		}
 		go util.WithRecovery(func() { e.runJoinWorker(workID, probeKeyColIdx) }, e.handleJoinWorkerPanic)
 	}
 	go util.WithRecovery(e.waitJoinWorkersAndCloseResultChan, nil)
@@ -603,10 +609,6 @@ func (e *MultiwayHashJoinExec) joinMatchedProbeSideRow2Chunk(workerID uint, prob
 	for b := e.numBuildExec - 1; 0 <= b; b-- {
 		numRows[b] = numRows[b+1] * len(buildSideRows[b])
 	}
-	tmpChks := make([]*chunk.Chunk, e.numBuildExec)
-	for i := 0; i < e.numBuildExec; i++ {
-		tmpChks[i] = chunk.New(e.joinExecutors[i].base().retFieldTypes, 1, 1)
-	}
 	//fmt.Println("numRows[0]", numRows[0])
 	for i := 0; i < numRows[0]; i++ {
 		lhs := probeSideRow
@@ -617,9 +619,9 @@ func (e *MultiwayHashJoinExec) joinMatchedProbeSideRow2Chunk(workerID uint, prob
 			//fmt.Println("rowIdx", rowIdx)
 			//fmt.Println("len buildSideRows", len(buildSideRows[b]), rowIdx, i, b)
 			iter := chunk.NewIterator4Slice(buildSideRows[b][rowIdx : rowIdx+1])
-			tmpChks[b].Reset()
+			e.tmpChks[workerID][b].Reset()
 			for iter.Begin(); iter.Current() != iter.End(); {
-				matched, _, err := e.joiners[b][workerID].tryToMatchInners(lhs, iter, tmpChks[b])
+				matched, _, err := e.joiners[b][workerID].tryToMatchInners(lhs, iter, e.tmpChks[workerID][b])
 				//fmt.Println(err)
 				if err != nil {
 					joinResult.err = err
@@ -634,7 +636,7 @@ func (e *MultiwayHashJoinExec) joinMatchedProbeSideRow2Chunk(workerID uint, prob
 				break
 			}
 			//fmt.Println("before")
-			lhs = tmpChks[b].GetRow(0)
+			lhs = e.tmpChks[workerID][b].GetRow(0)
 			//fmt.Println("after")
 		}
 		//fmt.Println("allMatched", allMatched)
