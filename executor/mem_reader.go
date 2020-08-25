@@ -14,6 +14,8 @@
 package executor
 
 import (
+	"fmt"
+
 	"github.com/pingcap/errors"
 	"github.com/pingcap/parser/model"
 	"github.com/pingcap/parser/mysql"
@@ -152,6 +154,7 @@ type memTableReader struct {
 	colIDs        map[int64]int
 	buffer        allocBuf
 	pkColIDs      []int64
+	keySet        map[string]struct{}
 }
 
 type allocBuf struct {
@@ -196,6 +199,38 @@ func buildMemTableReader(us *UnionScanExec, tblReader *TableReaderExecutor) *mem
 			rd:          rd,
 		},
 		pkColIDs: pkColIDs,
+		keySet: make(map[string]struct{}),
+	}
+}
+
+func PrettyPrintExpression(exp expression.Expression) {
+	var pp func(expression.Expression, string)
+	pp = func(exp expression.Expression, indent string) {
+		switch t := exp.(type) {
+		case *expression.ScalarFunction:
+			fmt.Println(indent, t.FuncName)
+			for _, arg := range t.GetArgs() {
+				pp(arg, indent + "\t")
+			}
+		case *expression.Column:
+			fmt.Println(indent, "Column", t.UniqueID, t.ToInfo(), t.Index)
+		case *expression.CorrelatedColumn:
+			fmt.Println(indent, "CorCol", t.UniqueID, t.ToInfo(), t.Data.String())
+		case *expression.Constant:
+			fmt.Println(indent, "Consta", t.Value)
+		default:
+			fmt.Println("type error")
+		}
+	}
+	pp(exp, "")
+}
+
+func PrettyPrintRow(row chunk.Row) {
+	numCol := row.Chunk().NumCols()
+	info := ""
+	for i := 0; i < numCol; i++ {
+		col := *row.Chunk().Column(i)
+		info += fmt.Sprintf("{%2d: %10s} ", i, col)
 	}
 }
 
@@ -203,13 +238,31 @@ func buildMemTableReader(us *UnionScanExec, tblReader *TableReaderExecutor) *mem
 func (m *memTableReader) getMemRows() ([][]types.Datum, error) {
 	mutableRow := chunk.MutRowFromTypes(m.retFieldTypes)
 	err := iterTxnMemBuffer(m.ctx, m.kvRanges, func(key, value []byte) error {
+		fmt.Println(key, value)
+		if _, has := m.keySet[string(key)]; has {
+			return nil
+		}
+		m.keySet[string(key)] = struct{}{}
 		row, err := m.decodeRecordKeyValue(key, value)
 		if err != nil {
 			return err
 		}
 
 		mutableRow.SetDatums(row...)
+		rowPrint := ""
+		for i, tp := range m.retFieldTypes {
+			col, _ := row[i].ToString()
+			rowPrint += fmt.Sprintf("{%2d:%s: %10s}  ", i, tp, col)
+		}
+		fmt.Println(rowPrint)
+		for _, cond := range m.conditions {
+			fmt.Println(cond.String())
+			PrettyPrintExpression(cond)
+		}
 		matched, _, err := expression.EvalBool(m.ctx, m.conditions, mutableRow.ToRow())
+		if matched {
+			fmt.Println("matched!\n\n")
+		}
 		if err != nil || !matched {
 			return err
 		}
@@ -220,6 +273,7 @@ func (m *memTableReader) getMemRows() ([][]types.Datum, error) {
 		return nil, err
 	}
 
+	fmt.Println("num of rows in addedRows", len(m.addedRows))
 	// TODO: After refine `IterReverse`, remove below logic and use `IterReverse` when do reverse scan.
 	if m.desc {
 		reverseDatumSlice(m.addedRows)
