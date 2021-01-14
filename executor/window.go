@@ -15,6 +15,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/cznic/mathutil"
 	"github.com/pingcap/errors"
@@ -83,6 +84,7 @@ func (e *WindowExec) consumeOneGroup(ctx context.Context) error {
 			e.executed = true
 			return e.consumeGroupRows(groupRows)
 		}
+		// 为啥这里不用管前面的结果啊？
 		_, err = e.groupChecker.splitIntoGroups(e.childResult)
 		if err != nil {
 			return errors.Trace(err)
@@ -133,10 +135,12 @@ func (e *WindowExec) consumeGroupRows(groupRows []chunk.Row) (err error) {
 		// TODO: Combine these three methods.
 		// The old implementation needs the processor has these three methods
 		// but now it does not have to.
+		fmt.Println("number of groupRows processed", len(groupRows), "remained", remainingRowsInGroup)
 		groupRows, err = e.processor.consumeGroupRows(e.ctx, groupRows)
 		if err != nil {
 			return errors.Trace(err)
 		}
+		// seems an oom-point
 		_, err = e.processor.appendResult2Chunk(e.ctx, groupRows, e.resultChunks[i], remained)
 		if err != nil {
 			return errors.Trace(err)
