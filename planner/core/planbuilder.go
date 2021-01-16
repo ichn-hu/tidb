@@ -1530,7 +1530,7 @@ func getPhysicalIDsAndPartitionNames(tblInfo *model.TableInfo, partitionNames []
 func (b *PlanBuilder) buildAnalyzeTable(as *ast.AnalyzeTableStmt, opts map[ast.AnalyzeOptionType]uint64) (Plan, error) {
 	p := &Analyze{Opts: opts}
 	for _, tbl := range as.TableNames {
-		if tbl.TableInfo.IsView() {
+		if tbl.TableInfo.IsView() || tbl.TableInfo.IsMaterializedView() {
 			return nil, errors.Errorf("analyze view %s is not supported now.", tbl.Name.O)
 		}
 		if tbl.TableInfo.IsSequence() {
@@ -1915,7 +1915,7 @@ func (b *PlanBuilder) buildShow(ctx context.Context, show *ast.ShowStmt) (Plan, 
 		}
 		b.visitInfo = appendVisitInfo(b.visitInfo, mysql.AllPrivMask, show.Table.Schema.L, show.Table.Name.L, "", err)
 		if table, err := b.is.TableByName(show.Table.Schema, show.Table.Name); err == nil {
-			isView = table.Meta().IsView()
+			isView = table.Meta().IsView() || table.Meta().IsMaterializedView()
 			isSequence = table.Meta().IsSequence()
 		}
 	case ast.ShowCreateView:
@@ -2178,7 +2178,7 @@ func (b *PlanBuilder) buildInsert(ctx context.Context, insert *ast.InsertStmt) (
 		return nil, infoschema.ErrTableNotExists.GenWithStackByArgs()
 	}
 	tableInfo := tn.TableInfo
-	if tableInfo.IsView() {
+	if tableInfo.IsView() || tableInfo.IsMaterializedView() {
 		err := errors.Errorf("insert into view %s is not supported now.", tableInfo.Name.O)
 		if insert.IsReplace {
 			err = errors.Errorf("replace into view %s is not supported now.", tableInfo.Name.O)

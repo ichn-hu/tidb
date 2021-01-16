@@ -432,6 +432,10 @@ func (p PhysicalTableReader) Init(ctx sessionctx.Context, offset int) *PhysicalT
 	return &p
 }
 
+func (p PhysicalMaterializedViewReader) Init(ctx sessionctx.Context, offset int) *PhysicalMaterializedViewReader {
+	return &p
+}
+
 // Init initializes PhysicalIndexReader.
 func (p PhysicalIndexReader) Init(ctx sessionctx.Context, offset int) *PhysicalIndexReader {
 	p.basePhysicalPlan = newBasePhysicalPlan(ctx, plancodec.TypeIndexReader, &p, offset)

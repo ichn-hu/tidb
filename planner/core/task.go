@@ -68,6 +68,7 @@ type copTask struct {
 	// rootTaskConds stores select conditions containing virtual columns.
 	// These conditions can't push to TiKV, so we have to add a selection for rootTask
 	rootTaskConds []expression.Expression
+	isMaterializedView bool
 }
 
 func (t *copTask) invalid() bool {
@@ -746,12 +747,18 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 			}
 		}
 		ts := tp.(*PhysicalTableScan)
-		p := PhysicalTableReader{
-			tablePlan: t.tablePlan,
-			StoreType: ts.StoreType,
-		}.Init(ctx, t.tablePlan.SelectBlockOffset())
-		p.stats = t.tablePlan.statsInfo()
-		newTask.p = p
+		if t.isMaterializedView {
+			p := PhysicalMaterializedViewReader {}.Init(ctx, t.tablePlan.SelectBlockOffset())
+			p.stats = t.tablePlan.statsInfo()
+			newTask.p = p
+		} else {
+			p := PhysicalTableReader{
+				tablePlan: t.tablePlan,
+				StoreType: ts.StoreType,
+			}.Init(ctx, t.tablePlan.SelectBlockOffset())
+			p.stats = t.tablePlan.statsInfo()
+			newTask.p = p
+		}
 	}
 
 	if len(t.rootTaskConds) > 0 {

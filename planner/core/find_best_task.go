@@ -1184,11 +1184,15 @@ func (ds *DataSource) convertToTableScan(prop *property.PhysicalProperty, candid
 		return invalidTask, nil
 	}
 	ts, cost, _ := ds.getOriginalPhysicalTableScan(prop, candidate.path, candidate.isMatchProp)
+	if ds.isMaterializedView {
+		cost = 0 // we will use table scan, and make sure it is selected
+	}
 	copTask := &copTask{
 		tablePlan:         ts,
 		indexPlanFinished: true,
 		tblColHists:       ds.TblColHists,
 		cst:               cost,
+		isMaterializedView: ds.isMaterializedView,
 	}
 	task = copTask
 	if candidate.isMatchProp {

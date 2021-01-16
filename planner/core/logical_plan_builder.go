@@ -2908,6 +2908,12 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 		return b.BuildDataSourceFromView(ctx, dbName, tableInfo)
 	}
 
+	if tableInfo.IsMaterializedView() {
+		if b.inDeleteStmt || b.inUpdateStmt {
+			return nil, ErrBadTable // can't update view
+		}
+	}
+
 	if tableInfo.GetPartitionInfo() != nil {
 		b.optFlag = b.optFlag | flagPartitionProcessor
 		pt := tbl.(table.PartitionedTable)
@@ -3030,6 +3036,7 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 		preferPartitions:    make(map[int][]model.CIStr),
 		is:                  b.is,
 		isForUpdateRead:     b.isForUpdateRead,
+		isMaterializedView: tableInfo.IsMaterializedView(),
 	}.Init(b.ctx, b.getSelectOffset())
 
 	var handleCol *expression.Column

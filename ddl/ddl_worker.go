@@ -628,6 +628,8 @@ func (w *worker) runDDLJob(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, 
 		ver, err = onRepairTable(d, t, job)
 	case model.ActionCreateView:
 		ver, err = onCreateView(d, t, job)
+	case model.ActionCreateMaterializedView:
+		ver, err = onCreateMaterializedView(d, t, job)
 	case model.ActionDropTable, model.ActionDropView, model.ActionDropSequence:
 		ver, err = onDropTableOrView(t, job)
 	case model.ActionDropTablePartition:

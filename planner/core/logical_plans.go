@@ -513,6 +513,9 @@ type DataSource struct {
 	// 1. use `inside insert`, `update`, `delete` or `select for update` statement
 	// 2. isolation level is RC
 	isForUpdateRead bool
+
+	// isMaterializedView will be true if the the data source is a materialized view
+	isMaterializedView bool
 }
 
 // ExtractCorrelatedCols implements LogicalPlan interface.

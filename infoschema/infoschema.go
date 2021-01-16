@@ -174,7 +174,7 @@ func (is *infoSchema) TableByName(schema, table model.CIStr) (t table.Table, err
 func (is *infoSchema) TableIsView(schema, table model.CIStr) bool {
 	if tbNames, ok := is.schemaMap[schema.L]; ok {
 		if t, ok := tbNames.tables[table.L]; ok {
-			return t.Meta().IsView()
+			return t.Meta().IsView() || t.Meta().IsMaterializedView()
 		}
 	}
 	return false
