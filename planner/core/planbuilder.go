@@ -2931,6 +2931,43 @@ func (b *PlanBuilder) buildDDL(ctx context.Context, node ast.DDLNode) (Plan, err
 			b.visitInfo = appendVisitInfo(b.visitInfo, mysql.SuperPriv, "",
 				"", "", err)
 		}
+	case *ast.CreateMaterializedViewStmt:
+		b.capFlag |= canExpandAST | renameView
+		b.renamingViewName = v.MaterializedViewName.Schema.L + "." + v.MaterializedViewName.Name.L
+		defer func() {
+			b.capFlag &= ^canExpandAST
+			b.capFlag &= ^renameView
+		}()
+		plan, err := b.Build(ctx, v.Select)
+		if err != nil {
+			return nil, err
+		}
+		schema := plan.Schema()
+		names := plan.OutputNames()
+		if v.Cols == nil {
+			adjustOverlongMaterializedViewColname(plan.(LogicalPlan))
+			v.Cols = make([]model.CIStr, len(schema.Columns))
+			for i, name := range names {
+				v.Cols[i] = name.ColName
+			}
+		}
+		if len(v.Cols) != schema.Len() {
+			return nil, ddl.ErrViewWrongList
+		}
+		if b.ctx.GetSessionVars().User != nil {
+			authErr = ErrTableaccessDenied.GenWithStackByArgs("CREATE MVIEW", b.ctx.GetSessionVars().User.AuthUsername,
+				b.ctx.GetSessionVars().User.AuthHostname, v.MaterializedViewName.Name.L)
+		}
+		b.visitInfo = appendVisitInfo(b.visitInfo, mysql.CreateViewPriv, v.MaterializedViewName.Schema.L,
+			v.MaterializedViewName.Name.L, "", authErr)
+		if v.Definer.CurrentUser && b.ctx.GetSessionVars().User != nil {
+			v.Definer = b.ctx.GetSessionVars().User
+		}
+		if b.ctx.GetSessionVars().User != nil && v.Definer.String() != b.ctx.GetSessionVars().User.String() {
+			err = ErrSpecificAccessDenied.GenWithStackByArgs("SUPER")
+			b.visitInfo = appendVisitInfo(b.visitInfo, mysql.SuperPriv, "",
+				"", "", err)
+		}
 	case *ast.CreateSequenceStmt:
 		if b.ctx.GetSessionVars().User != nil {
 			authErr = ErrTableaccessDenied.GenWithStackByArgs("CREATE", b.ctx.GetSessionVars().User.AuthUsername,
@@ -3357,6 +3394,14 @@ func buildChecksumTableSchema() (*expression.Schema, []*types.FieldName) {
 // `new_exp_$off` where `$off` is the offset of the output column, $off starts from 1.
 // There is still some MySQL compatible problems.
 func adjustOverlongViewColname(plan LogicalPlan) {
+	outputNames := plan.OutputNames()
+	for i := range outputNames {
+		if outputName := outputNames[i].ColName.L; len(outputName) > mysql.MaxColumnNameLength {
+			outputNames[i].ColName = model.NewCIStr(fmt.Sprintf("name_exp_%d", i+1))
+		}
+	}
+}
+func adjustOverlongMaterializedViewColname(plan LogicalPlan) {
 	outputNames := plan.OutputNames()
 	for i := range outputNames {
 		if outputName := outputNames[i].ColName.L; len(outputName) > mysql.MaxColumnNameLength {
