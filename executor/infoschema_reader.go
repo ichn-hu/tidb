@@ -441,7 +441,7 @@ func (e *memtableRetriever) setDataFromTables(ctx sessionctx.Context, schemas []
 				continue
 			}
 			pkType := "NON-CLUSTERED"
-			if !table.IsView() {
+			if !table.IsView() && !table.IsMaterializedView() {
 				if table.GetPartitionInfo() != nil {
 					createOptions = "partitioned"
 				}
@@ -874,7 +874,7 @@ func (e *memtableRetriever) setDataFromViews(ctx sessionctx.Context, schemas []*
 	var rows [][]types.Datum
 	for _, schema := range schemas {
 		for _, table := range schema.Tables {
-			if !table.IsView() {
+			if !table.IsView() && !table.IsMaterializedView() {
 				continue
 			}
 			collation := table.Collate

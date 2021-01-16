@@ -39,6 +39,7 @@ type InfoSchema interface {
 	SchemaByName(schema model.CIStr) (*model.DBInfo, bool)
 	SchemaExists(schema model.CIStr) bool
 	TableByName(schema, table model.CIStr) (table.Table, error)
+	GetAllMaterializedViews() []table.Table
 	TableExists(schema, table model.CIStr) bool
 	SchemaByID(id int64) (*model.DBInfo, bool)
 	SchemaByTable(tableInfo *model.TableInfo) (*model.DBInfo, bool)
@@ -184,10 +185,21 @@ func (is *infoSchema) TableByName(schema, table model.CIStr) (t table.Table, err
 func (is *infoSchema) TableIsView(schema, table model.CIStr) bool {
 	if tbNames, ok := is.schemaMap[schema.L]; ok {
 		if t, ok := tbNames.tables[table.L]; ok {
-			return t.Meta().IsView()
+			return t.Meta().IsView() || t.Meta().IsMaterializedView()
 		}
 	}
 	return false
+}
+
+func (is *infoSchema) GetAllMaterializedViews() (mvs []table.Table) {
+	for _, schema := range is.schemaMap {
+		for _, tb := range schema.tables {
+			if tb.Meta().IsMaterializedView() {
+				mvs = append(mvs, tb)
+			}
+		}
+	}
+	return mvs
 }
 
 func (is *infoSchema) TableIsSequence(schema, table model.CIStr) bool {

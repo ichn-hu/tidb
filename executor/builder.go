@@ -210,6 +210,8 @@ func (b *executorBuilder) build(p plannercore.Plan) Executor {
 		return b.buildAnalyze(v)
 	case *plannercore.PhysicalTableReader:
 		return b.buildTableReader(v)
+	case *plannercore.PhysicalMaterializedViewReader:
+		return b.buildMaterializedViewReader(v)
 	case *plannercore.PhysicalTableSample:
 		return b.buildTableSample(v)
 	case *plannercore.PhysicalIndexReader:
@@ -2764,6 +2766,10 @@ func prunePartitionForInnerExecutor(ctx sessionctx.Context, tbl table.Table, sch
 		}
 	}
 	return usedPartition, true, contentPos, nil
+}
+
+func (b *executorBuilder) buildMaterializedViewReader(v *plannercore.PhysicalMaterializedViewReader) *MaterializedViewReaderExecutor {
+	return &MaterializedViewReaderExecutor{newBaseExecutor(b.ctx, v.Schema(), v.ID())}
 }
 
 func buildNoRangeIndexReader(b *executorBuilder, v *plannercore.PhysicalIndexReader) (*IndexReaderExecutor, error) {

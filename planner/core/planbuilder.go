@@ -1571,7 +1571,7 @@ func (b *PlanBuilder) buildAnalyzeTable(as *ast.AnalyzeTableStmt, opts map[ast.A
 		return p, nil
 	}
 	for _, tbl := range as.TableNames {
-		if tbl.TableInfo.IsView() {
+		if tbl.TableInfo.IsView() || tbl.TableInfo.IsMaterializedView() {
 			return nil, errors.Errorf("analyze view %s is not supported now.", tbl.Name.O)
 		}
 		if tbl.TableInfo.IsSequence() {
@@ -2016,7 +2016,7 @@ func (b *PlanBuilder) buildShow(ctx context.Context, show *ast.ShowStmt) (Plan, 
 		}
 		b.visitInfo = appendVisitInfo(b.visitInfo, mysql.AllPrivMask, show.Table.Schema.L, show.Table.Name.L, "", err)
 		if table, err := b.is.TableByName(show.Table.Schema, show.Table.Name); err == nil {
-			isView = table.Meta().IsView()
+			isView = table.Meta().IsView() || table.Meta().IsMaterializedView()
 			isSequence = table.Meta().IsSequence()
 		}
 	case ast.ShowCreateView:
@@ -2301,7 +2301,7 @@ func (b *PlanBuilder) buildInsert(ctx context.Context, insert *ast.InsertStmt) (
 		return nil, infoschema.ErrTableNotExists.GenWithStackByArgs()
 	}
 	tableInfo := tn.TableInfo
-	if tableInfo.IsView() {
+	if tableInfo.IsView() || tableInfo.IsMaterializedView() {
 		err := errors.Errorf("insert into view %s is not supported now.", tableInfo.Name.O)
 		if insert.IsReplace {
 			err = errors.Errorf("replace into view %s is not supported now.", tableInfo.Name.O)
@@ -3112,6 +3112,43 @@ func (b *PlanBuilder) buildDDL(ctx context.Context, node ast.DDLNode) (Plan, err
 			b.visitInfo = appendVisitInfo(b.visitInfo, mysql.SuperPriv, "",
 				"", "", err)
 		}
+	case *ast.CreateMaterializedViewStmt:
+		b.capFlag |= canExpandAST | renameView
+		b.renamingViewName = v.MaterializedViewName.Schema.L + "." + v.MaterializedViewName.Name.L
+		defer func() {
+			b.capFlag &= ^canExpandAST
+			b.capFlag &= ^renameView
+		}()
+		plan, err := b.Build(ctx, v.Select)
+		if err != nil {
+			return nil, err
+		}
+		schema := plan.Schema()
+		names := plan.OutputNames()
+		if v.Cols == nil {
+			adjustOverlongMaterializedViewColname(plan.(LogicalPlan))
+			v.Cols = make([]model.CIStr, len(schema.Columns))
+			for i, name := range names {
+				v.Cols[i] = name.ColName
+			}
+		}
+		if len(v.Cols) != schema.Len() {
+			return nil, ddl.ErrViewWrongList
+		}
+		if b.ctx.GetSessionVars().User != nil {
+			authErr = ErrTableaccessDenied.GenWithStackByArgs("CREATE MVIEW", b.ctx.GetSessionVars().User.AuthUsername,
+				b.ctx.GetSessionVars().User.AuthHostname, v.MaterializedViewName.Name.L)
+		}
+		b.visitInfo = appendVisitInfo(b.visitInfo, mysql.CreateViewPriv, v.MaterializedViewName.Schema.L,
+			v.MaterializedViewName.Name.L, "", authErr)
+		if v.Definer.CurrentUser && b.ctx.GetSessionVars().User != nil {
+			v.Definer = b.ctx.GetSessionVars().User
+		}
+		if b.ctx.GetSessionVars().User != nil && v.Definer.String() != b.ctx.GetSessionVars().User.String() {
+			err = ErrSpecificAccessDenied.GenWithStackByArgs("SUPER")
+			b.visitInfo = appendVisitInfo(b.visitInfo, mysql.SuperPriv, "",
+				"", "", err)
+		}
 	case *ast.CreateSequenceStmt:
 		if b.ctx.GetSessionVars().User != nil {
 			authErr = ErrTableaccessDenied.GenWithStackByArgs("CREATE", b.ctx.GetSessionVars().User.AuthUsername,
@@ -3541,6 +3578,14 @@ func buildChecksumTableSchema() (*expression.Schema, []*types.FieldName) {
 // `new_exp_$off` where `$off` is the offset of the output column, $off starts from 1.
 // There is still some MySQL compatible problems.
 func adjustOverlongViewColname(plan LogicalPlan) {
+	outputNames := plan.OutputNames()
+	for i := range outputNames {
+		if outputName := outputNames[i].ColName.L; len(outputName) > mysql.MaxColumnNameLength {
+			outputNames[i].ColName = model.NewCIStr(fmt.Sprintf("name_exp_%d", i+1))
+		}
+	}
+}
+func adjustOverlongMaterializedViewColname(plan LogicalPlan) {
 	outputNames := plan.OutputNames()
 	for i := range outputNames {
 		if outputName := outputNames[i].ColName.L; len(outputName) > mysql.MaxColumnNameLength {

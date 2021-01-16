@@ -5,6 +5,7 @@ require (
 	github.com/DATA-DOG/go-sqlmock v1.5.0 // indirect
 	github.com/HdrHistogram/hdrhistogram-go v0.9.0 // indirect
 	github.com/Jeffail/gabs/v2 v2.5.1
+	github.com/Shopify/sarama v1.27.2
 	github.com/blacktear23/go-proxyprotocol v0.0.0-20180807104634-af7a81e8dd0d
 	github.com/carlmjohnson/flagext v0.20.2 // indirect
 	github.com/cheggaaa/pb/v3 v3.0.4 // indirect
@@ -21,7 +22,7 @@ require (
 	github.com/go-yaml/yaml v2.1.0+incompatible
 	github.com/gogo/protobuf v1.3.1
 	github.com/golang/protobuf v1.3.4
-	github.com/golang/snappy v0.0.2-0.20190904063534-ff6b7dc882cf
+	github.com/golang/snappy v0.0.2
 	github.com/google/btree v1.0.0
 	github.com/google/pprof v0.0.0-20200407044318-7d83b28da2e9
 	github.com/google/uuid v1.1.1
@@ -50,6 +51,7 @@ require (
 	github.com/pingcap/log v0.0.0-20201112100606-8f1e84a3abc8
 	github.com/pingcap/parser v0.0.0-20201222091346-02c8ff27d0bc
 	github.com/pingcap/sysutil v0.0.0-20201130064824-f0c8aa6a6966
+	github.com/pingcap/ticdc v0.0.0-20210115085059-33b871e798ec
 	github.com/pingcap/tidb-lightning v4.0.9-0.20201106041742-a1ac97827a27+incompatible
 	github.com/pingcap/tidb-tools v4.0.9-0.20201127090955-2707c97b3853+incompatible
 	github.com/pingcap/tipb v0.0.0-20201209065231-aa39b1b86217
@@ -73,10 +75,9 @@ require (
 	go.uber.org/automaxprocs v1.2.0
 	go.uber.org/multierr v1.6.0 // indirect
 	go.uber.org/zap v1.16.0
-	golang.org/x/crypto v0.0.0-20200820211705-5c72a883971a // indirect
-	golang.org/x/net v0.0.0-20200904194848-62affa334b73
+	golang.org/x/net v0.0.0-20201022231255-08b38378de70
 	golang.org/x/sync v0.0.0-20201020160332-67f06af15bc9
-	golang.org/x/sys v0.0.0-20200819171115-d785dc25833f
+	golang.org/x/sys v0.0.0-20200930185726-fdedc70b468f
 	golang.org/x/text v0.3.4
 	golang.org/x/tools v0.0.0-20200820010801-b793a1359eac
 	google.golang.org/grpc v1.27.1
@@ -90,3 +91,5 @@ require (
 )
 
 go 1.13
+
+replace github.com/pingcap/parser => github.com/cosmic-jc/parser v0.0.0-20210117021542-2d852b0b8289

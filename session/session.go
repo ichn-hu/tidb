@@ -2077,6 +2077,8 @@ func BootstrapSession(store kv.Storage) (*domain.Domain, error) {
 		}
 	}
 
+	err = dom.UpdateMaterializedViewLoop()
+
 	return dom, err
 }
 

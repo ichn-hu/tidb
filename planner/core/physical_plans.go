@@ -62,6 +62,7 @@ var (
 	_ PhysicalPlan = &PhysicalShuffleReceiverStub{}
 	_ PhysicalPlan = &BatchPointGetPlan{}
 	_ PhysicalPlan = &PhysicalTableSample{}
+	_ PhysicalPlan = &PhysicalMaterializedViewReader{}
 )
 
 // PhysicalTableReader is the table reader in tidb.
@@ -105,6 +106,32 @@ func (p *PhysicalTableReader) GetTableScan() *PhysicalTableScan {
 			curPlan = curPlan.Children()[0]
 		} else {
 			join := curPlan.(*PhysicalHashJoin)
+			curPlan = join.children[1-join.globalChildIndex]
+		}
+	}
+}
+
+type PhysicalMaterializedViewReader struct {
+	physicalSchemaProducer
+	tablePlan PhysicalPlan
+}
+
+// GetTablePlan exports the tablePlan.
+func (p *PhysicalMaterializedViewReader) GetTablePlan() PhysicalPlan {
+	return p.tablePlan
+}
+
+// GetTableScan exports the tableScan that contained in tablePlan.
+func (p *PhysicalMaterializedViewReader) GetTableScan() *PhysicalTableScan {
+	curPlan := p.tablePlan
+	for {
+		chCnt := len(curPlan.Children())
+		if chCnt == 0 {
+			return curPlan.(*PhysicalTableScan)
+		} else if chCnt == 1 {
+			curPlan = curPlan.Children()[0]
+		} else {
+			join := curPlan.(*PhysicalBroadCastJoin)
 			curPlan = join.children[1-join.globalChildIndex]
 		}
 	}

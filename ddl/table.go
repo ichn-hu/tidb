@@ -103,6 +103,15 @@ func createTableOrViewWithCheck(t *meta.Meta, job *model.Job, schemaID int64, tb
 	return t.CreateTableOrView(schemaID, tbInfo)
 }
 
+func createTableOrMaterializedViewWithCheck(t *meta.Meta, job *model.Job, schemaID int64, tbInfo *model.TableInfo) error {
+	err := checkTableInfoValid(tbInfo)
+	if err != nil {
+		job.State = model.JobStateCancelled
+		return errors.Trace(err)
+	}
+	return t.CreateTableOrMaterializedView(schemaID, tbInfo)
+}
+
 func repairTableOrViewWithCheck(t *meta.Meta, job *model.Job, schemaID int64, tbInfo *model.TableInfo) error {
 	err := checkTableInfoValid(tbInfo)
 	if err != nil {
@@ -159,6 +168,59 @@ func onCreateView(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, _ error) 
 		// Finish this job.
 		job.FinishTableJob(model.JobStateDone, model.StatePublic, ver, tbInfo)
 		asyncNotifyEvent(d, &util.Event{Tp: model.ActionCreateView, TableInfo: tbInfo})
+		return ver, nil
+	default:
+		return ver, ErrInvalidDDLState.GenWithStackByArgs("table", tbInfo.State)
+	}
+}
+
+func onCreateMaterializedView(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, _ error) {
+	schemaID := job.SchemaID
+	tbInfo := &model.TableInfo{}
+	var orReplace bool
+	var oldTbInfoID int64
+	if err := job.DecodeArgs(tbInfo, &orReplace, &oldTbInfoID); err != nil {
+		// Invalid arguments, cancel this job.
+		job.State = model.JobStateCancelled
+		return ver, errors.Trace(err)
+	}
+	tbInfo.State = model.StateNone
+	err := checkTableNotExists(d, t, schemaID, tbInfo.Name.L)
+	if err != nil {
+		if infoschema.ErrDatabaseNotExists.Equal(err) {
+			job.State = model.JobStateCancelled
+			return ver, errors.Trace(err)
+		} else if infoschema.ErrTableExists.Equal(err) {
+			if !orReplace {
+				job.State = model.JobStateCancelled
+				return ver, errors.Trace(err)
+			}
+		} else {
+			return ver, errors.Trace(err)
+		}
+	}
+	ver, err = updateSchemaVersion(t, job)
+	if err != nil {
+		return ver, errors.Trace(err)
+	}
+	switch tbInfo.State {
+	case model.StateNone:
+		// none -> public
+		tbInfo.State = model.StatePublic
+		tbInfo.UpdateTS = t.StartTS
+		if oldTbInfoID > 0 && orReplace {
+			err = t.DropTableOrView(schemaID, oldTbInfoID, true)
+			if err != nil {
+				return ver, errors.Trace(err)
+			}
+		}
+		err = createTableOrMaterializedViewWithCheck(t, job, schemaID, tbInfo)
+		if err != nil {
+			return ver, errors.Trace(err)
+		}
+		// Finish this job.
+		job.FinishTableJob(model.JobStateDone, model.StatePublic, ver, tbInfo)
+		asyncNotifyEvent(d, &util.Event{Tp: model.ActionCreateMaterializedView, TableInfo: tbInfo})
 		return ver, nil
 	default:
 		return ver, ErrInvalidDDLState.GenWithStackByArgs("table", tbInfo.State)
@@ -458,7 +520,7 @@ func onTruncateTable(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, _ erro
 	if err != nil {
 		return ver, errors.Trace(err)
 	}
-	if tblInfo.IsView() || tblInfo.IsSequence() {
+	if tblInfo.IsView() || tblInfo.IsMaterializedView() || tblInfo.IsSequence() {
 		job.State = model.JobStateCancelled
 		return ver, infoschema.ErrTableNotExists.GenWithStackByArgs(job.SchemaName, tblInfo.Name.O)
 	}

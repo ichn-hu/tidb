@@ -1595,7 +1595,7 @@ func checkTableInfoValid(tblInfo *model.TableInfo) error {
 
 func buildTableInfoWithLike(ident ast.Ident, referTblInfo *model.TableInfo) (*model.TableInfo, error) {
 	// Check the referred table is a real table object.
-	if referTblInfo.IsSequence() || referTblInfo.IsView() {
+	if referTblInfo.IsSequence() || referTblInfo.IsView() || referTblInfo.IsMaterializedView() {
 		return nil, ErrWrongObject.GenWithStackByArgs(ident.Schema, referTblInfo.Name, "BASE TABLE")
 	}
 	tblInfo := *referTblInfo
@@ -1785,8 +1785,8 @@ func (d *ddl) CreateTableWithInfo(
 			return nil
 		case OnExistReplace:
 			// only CREATE OR REPLACE VIEW is supported at the moment.
-			if tbInfo.View != nil {
-				if oldTable.Meta().IsView() {
+			if tbInfo.View != nil || tbInfo.MaterializedView != nil {
+				if oldTable.Meta().IsView() || oldTable.Meta().IsMaterializedView() {
 					oldViewTblID = oldTable.Meta().ID
 					break
 				}
@@ -1819,6 +1819,9 @@ func (d *ddl) CreateTableWithInfo(
 	switch {
 	case tbInfo.View != nil:
 		actionType = model.ActionCreateView
+		args = append(args, onExist == OnExistReplace, oldViewTblID)
+	case tbInfo.MaterializedView != nil:
+		actionType = model.ActionCreateMaterializedView
 		args = append(args, onExist == OnExistReplace, oldViewTblID)
 	case tbInfo.Sequence != nil:
 		actionType = model.ActionCreateSequence
@@ -1976,6 +1979,74 @@ func buildViewInfo(ctx sessionctx.Context, s *ast.CreateViewStmt) (*model.ViewIn
 
 func checkPartitionByHash(ctx sessionctx.Context, tbInfo *model.TableInfo) error {
 	return checkNoHashPartitions(ctx, tbInfo.Partition.Num)
+}
+
+func (d *ddl) CreateMaterializedView(ctx sessionctx.Context, s *ast.CreateMaterializedViewStmt) error {
+	viewInfo, err := buildMaterializedViewInfo(ctx, s)
+	if err != nil {
+		return err
+	}
+
+	cols := make([]*table.Column, len(s.Cols))
+	for i, v := range s.Cols {
+		cols[i] = table.ToColumn(&model.ColumnInfo{
+			Name:   v,
+			ID:     int64(i),
+			Offset: i,
+			State:  model.StatePublic,
+		})
+	}
+
+	tblCharset := ""
+	tblCollate := ""
+	if v, ok := ctx.GetSessionVars().GetSystemVar("character_set_client"); ok {
+		tblCharset = v
+	}
+	if v, ok := ctx.GetSessionVars().GetSystemVar("collation_connection"); ok {
+		tblCollate = v
+	}
+
+	tbInfo, err := buildTableInfo(ctx, s.MaterializedViewName.Name, cols, nil, tblCharset, tblCollate)
+	if err != nil {
+		return err
+	}
+	tbInfo.MaterializedView = viewInfo
+
+	onExist := OnExistError
+	if s.OrReplace {
+		onExist = OnExistReplace
+	}
+
+	return d.CreateTableWithInfo(ctx, s.MaterializedViewName.Schema, tbInfo, onExist, false /*tryRetainID*/)
+}
+
+func buildMaterializedViewInfo(ctx sessionctx.Context, s *ast.CreateMaterializedViewStmt) (*model.MaterializedViewInfo, error) {
+	// Always Use `format.RestoreNameBackQuotes` to restore `SELECT` statement despite the `ANSI_QUOTES` SQL Mode is enabled or not.
+	restoreFlag := format.RestoreStringSingleQuotes | format.RestoreKeyWordUppercase | format.RestoreNameBackQuotes
+	var sb strings.Builder
+	if err := s.Select.Restore(format.NewRestoreCtx(restoreFlag, &sb)); err != nil {
+		return nil, err
+	}
+
+	return &model.MaterializedViewInfo{Definer: s.Definer, Algorithm: s.Algorithm,
+		Security: s.Security, SelectStmt: sb.String(), CheckOption: s.CheckOption, Cols: nil}, nil
+}
+
+func checkPartitionByHash(ctx sessionctx.Context, tbInfo *model.TableInfo, s *ast.CreateTableStmt) error {
+	pi := tbInfo.Partition
+	if err := checkPartitionNameUnique(pi); err != nil {
+		return err
+	}
+	if err := checkAddPartitionTooManyPartitions(pi.Num); err != nil {
+		return err
+	}
+	if err := checkNoHashPartitions(ctx, pi.Num); err != nil {
+		return err
+	}
+	if err := checkPartitionFuncValid(ctx, tbInfo, s.Partition.Expr); err != nil {
+		return err
+	}
+	return checkPartitionFuncType(ctx, s, tbInfo)
 }
 
 // checkPartitionByRange checks validity of a "BY RANGE" partition.
@@ -4393,7 +4464,7 @@ func (d *ddl) DropTable(ctx sessionctx.Context, ti ast.Ident) (err error) {
 		return errors.Trace(err)
 	}
 
-	if tb.Meta().IsView() {
+	if tb.Meta().IsView() || tb.Meta().IsMaterializedView() {
 		return infoschema.ErrTableNotExists.GenWithStackByArgs(ti.Schema, ti.Name)
 	}
 	if tb.Meta().IsSequence() {
@@ -4429,7 +4500,7 @@ func (d *ddl) DropView(ctx sessionctx.Context, ti ast.Ident) (err error) {
 		return errors.Trace(err)
 	}
 
-	if !tb.Meta().IsView() {
+	if !tb.Meta().IsView() && !tb.Meta().IsMaterializedView() {
 		return ErrWrongObject.GenWithStackByArgs(ti.Schema, ti.Name, "VIEW")
 	}
 
@@ -4451,7 +4522,7 @@ func (d *ddl) TruncateTable(ctx sessionctx.Context, ti ast.Ident) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	if tb.Meta().IsView() || tb.Meta().IsSequence() {
+	if tb.Meta().IsView() || tb.Meta().IsMaterializedView() || tb.Meta().IsSequence() {
 		return infoschema.ErrTableNotExists.GenWithStackByArgs(schema.Name.O, tb.Meta().Name.O)
 	}
 	genIDs, err := d.genGlobalIDs(1)
@@ -5273,7 +5344,7 @@ func (d *ddl) LockTables(ctx sessionctx.Context, stmt *ast.LockTablesStmt) error
 		if err != nil {
 			return errors.Trace(err)
 		}
-		if t.Meta().IsView() || t.Meta().IsSequence() {
+		if t.Meta().IsView() || t.Meta().IsMaterializedView() || t.Meta().IsSequence() {
 			return table.ErrUnsupportedOp.GenWithStackByArgs()
 		}
 		err = checkTableLocked(t.Meta(), tl.Type, sessionInfo)
@@ -5390,7 +5461,7 @@ func (d *ddl) CleanupTableLock(ctx sessionctx.Context, tables []*ast.TableName) 
 		if err != nil {
 			return errors.Trace(err)
 		}
-		if t.Meta().IsView() || t.Meta().IsSequence() {
+		if t.Meta().IsView() || t.Meta().IsMaterializedView() || t.Meta().IsSequence() {
 			return table.ErrUnsupportedOp
 		}
 		// Maybe the table t was not locked, but still try to unlock this table.

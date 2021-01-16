@@ -3048,8 +3048,8 @@ func unfoldWildStar(field *ast.SelectField, outputName types.NameSlice, column [
 			continue
 		}
 		if (dbName.L == "" || dbName.L == name.DBName.L) &&
-			(tblName.L == "" || tblName.L == name.TblName.L) &&
-			col.ID != model.ExtraHandleID {
+			(tblName.L == "" || tblName.L == name.TblName.L) {
+			//&& col.ID != model.ExtraHandleID
 			colName := &ast.ColumnNameExpr{
 				Name: &ast.ColumnName{
 					Schema: name.DBName,
@@ -3571,6 +3571,18 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 		return b.BuildDataSourceFromView(ctx, dbName, tableInfo)
 	}
 
+	var mp LogicalPlan
+	if tableInfo.IsMaterializedView() {
+		if b.inDeleteStmt || b.inUpdateStmt {
+			return nil, ErrBadTable // can't update view
+		}
+		//NOTION: comment next sentence to make materialized view a real one, or it's identical to view
+		mp, err = b.BuildDataSourceFromMaterializedView(ctx, dbName, tableInfo)
+		if err != nil {
+			return mp, err
+		}
+	}
+
 	if tableInfo.GetPartitionInfo() != nil {
 		// Use the new partition implementation, clean up the code here when it's full implemented.
 		if !b.ctx.GetSessionVars().UseDynamicPartitionPrune() {
@@ -3696,6 +3708,7 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 		partitionNames:      tn.PartitionNames,
 		TblCols:             make([]*expression.Column, 0, len(columns)),
 		preferPartitions:    make(map[int][]model.CIStr),
+		isMaterializedView:  tableInfo.IsMaterializedView(),
 	}.Init(b.ctx, b.getSelectOffset())
 	var handleCols HandleCols
 	schema := expression.NewSchema(make([]*expression.Column, 0, len(columns))...)
@@ -3966,6 +3979,102 @@ func (b *PlanBuilder) BuildDataSourceFromView(ctx context.Context, dbName model.
 	}
 
 	return b.buildProjUponView(ctx, dbName, tableInfo, selectLogicalPlan)
+}
+
+func (b *PlanBuilder) BuildDataSourceFromMaterializedView(ctx context.Context, dbName model.CIStr, tableInfo *model.TableInfo) (LogicalPlan, error) {
+	deferFunc, err := b.checkRecursiveView(dbName, tableInfo.Name)
+	if err != nil {
+		return nil, err
+	}
+	defer deferFunc()
+
+	charset, collation := b.ctx.GetSessionVars().GetCharsetInfo()
+	viewParser := parser.New()
+	viewParser.EnableWindowFunc(b.ctx.GetSessionVars().EnableWindowFunction)
+	selectNode, err := viewParser.ParseOneStmt(tableInfo.MaterializedView.SelectStmt, charset, collation)
+	if err != nil {
+		return nil, err
+	}
+	originalVisitInfo := b.visitInfo
+	b.visitInfo = make([]visitInfo, 0)
+	selectLogicalPlan, err := b.Build(ctx, selectNode)
+	if err != nil {
+		if terror.ErrorNotEqual(err, ErrViewRecursive) &&
+			terror.ErrorNotEqual(err, ErrNoSuchTable) {
+			err = ErrViewInvalid.GenWithStackByArgs(dbName.O, tableInfo.Name.O)
+		}
+		return nil, err
+	}
+
+	if tableInfo.MaterializedView.Security == model.SecurityDefiner {
+		if pm := privilege.GetPrivilegeManager(b.ctx); pm != nil {
+			for _, v := range b.visitInfo {
+				if !pm.RequestVerificationWithUser(v.db, v.table, v.column, v.privilege, tableInfo.MaterializedView.Definer) {
+					return nil, ErrViewInvalid.GenWithStackByArgs(dbName.O, tableInfo.Name.O)
+				}
+			}
+		}
+		b.visitInfo = b.visitInfo[:0]
+	}
+	b.visitInfo = append(originalVisitInfo, b.visitInfo...)
+
+	if b.ctx.GetSessionVars().StmtCtx.InExplainStmt {
+		b.visitInfo = appendVisitInfo(b.visitInfo, mysql.ShowViewPriv, dbName.L, tableInfo.Name.L, "", ErrViewNoExplain)
+	}
+
+	if len(tableInfo.Columns) != selectLogicalPlan.Schema().Len() {
+		return nil, ErrViewInvalid.GenWithStackByArgs(dbName.O, tableInfo.Name.O)
+	}
+
+	return b.buildProjUponMaterializedView(ctx, dbName, tableInfo, selectLogicalPlan)
+}
+func (b *PlanBuilder) buildProjUponMaterializedView(ctx context.Context, dbName model.CIStr, tableInfo *model.TableInfo, selectLogicalPlan Plan) (LogicalPlan, error) {
+	columnInfo := tableInfo.Cols()
+	cols := selectLogicalPlan.Schema().Clone().Columns
+	outputNamesOfUnderlyingSelect := selectLogicalPlan.OutputNames().Shallow()
+	// In the old version of VIEW implementation, tableInfo.View.Cols is used to
+	// store the origin columns' names of the underlying SelectStmt used when
+	// creating the view.
+	if tableInfo.MaterializedView.Cols != nil {
+		cols = cols[:0]
+		outputNamesOfUnderlyingSelect = outputNamesOfUnderlyingSelect[:0]
+		for _, info := range columnInfo {
+			idx := expression.FindFieldNameIdxByColName(selectLogicalPlan.OutputNames(), info.Name.L)
+			if idx == -1 {
+				return nil, ErrViewInvalid.GenWithStackByArgs(dbName.O, tableInfo.Name.O)
+			}
+			cols = append(cols, selectLogicalPlan.Schema().Columns[idx])
+			outputNamesOfUnderlyingSelect = append(outputNamesOfUnderlyingSelect, selectLogicalPlan.OutputNames()[idx])
+		}
+	}
+
+	projSchema := expression.NewSchema(make([]*expression.Column, 0, len(tableInfo.Columns))...)
+	projExprs := make([]expression.Expression, 0, len(tableInfo.Columns))
+	projNames := make(types.NameSlice, 0, len(tableInfo.Columns))
+	for i, name := range outputNamesOfUnderlyingSelect {
+		origColName := name.ColName
+		if tableInfo.MaterializedView.Cols != nil {
+			origColName = tableInfo.MaterializedView.Cols[i]
+		}
+		projNames = append(projNames, &types.FieldName{
+			// TblName is the of view instead of the name of the underlying table.
+			TblName:     tableInfo.Name,
+			OrigTblName: name.OrigTblName,
+			ColName:     columnInfo[i].Name,
+			OrigColName: origColName,
+			DBName:      dbName,
+		})
+		projSchema.Append(&expression.Column{
+			UniqueID: cols[i].UniqueID,
+			RetType:  cols[i].GetType(),
+		})
+		projExprs = append(projExprs, cols[i])
+	}
+	projUponView := LogicalProjection{Exprs: projExprs}.Init(b.ctx, b.getSelectOffset())
+	projUponView.names = projNames
+	projUponView.SetChildren(selectLogicalPlan.(LogicalPlan))
+	projUponView.SetSchema(projSchema)
+	return projUponView, nil
 }
 
 func (b *PlanBuilder) buildProjUponView(ctx context.Context, dbName model.CIStr, tableInfo *model.TableInfo, selectLogicalPlan Plan) (LogicalPlan, error) {

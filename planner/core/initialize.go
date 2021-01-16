@@ -429,6 +429,15 @@ func (p PhysicalTableSample) Init(ctx sessionctx.Context, offset int) *PhysicalT
 	return &p
 }
 
+func (p PhysicalMaterializedViewReader) Init(ctx sessionctx.Context, offset int) *PhysicalMaterializedViewReader {
+	p.basePhysicalPlan = newBasePhysicalPlan(ctx, plancodec.TypeTableReader, &p, offset)
+	if p.tablePlan != nil {
+		//p.TablePlans = flattenPushDownPlan(p.tablePlan)
+		p.schema = p.tablePlan.Schema()
+	}
+	return &p
+}
+
 // Init initializes PhysicalIndexReader.
 func (p PhysicalIndexReader) Init(ctx sessionctx.Context, offset int) *PhysicalIndexReader {
 	p.basePhysicalPlan = newBasePhysicalPlan(ctx, plancodec.TypeIndexReader, &p, offset)

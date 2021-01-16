@@ -520,6 +520,8 @@ type DataSource struct {
 	// preferPartitions store the map, the key represents store type, the value represents the partition name list.
 	preferPartitions map[int][]model.CIStr
 	SampleInfo       *TableSampleInfo
+	// isMaterializedView will be true if the the data source is a materialized view
+	isMaterializedView bool
 }
 
 // ExtractCorrelatedCols implements LogicalPlan interface.

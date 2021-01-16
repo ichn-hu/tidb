@@ -1488,11 +1488,15 @@ func (ds *DataSource) convertToTableScan(prop *property.PhysicalProperty, candid
 		mppTask = ts.addPushedDownSelectionToMppTask(mppTask, ds.stats)
 		return mppTask, nil
 	}
+	if ds.isMaterializedView {
+		cost = 0 // we will use table scan, and make sure it is selected
+	}
 	copTask := &copTask{
-		tablePlan:         ts,
-		indexPlanFinished: true,
-		tblColHists:       ds.TblColHists,
-		cst:               cost,
+		tablePlan:          ts,
+		indexPlanFinished:  true,
+		tblColHists:        ds.TblColHists,
+		cst:                cost,
+		isMaterializedView: ds.isMaterializedView,
 	}
 	copTask.partitionInfo = PartitionInfo{
 		PruningConds:   ds.allConds,

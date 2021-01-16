@@ -351,6 +351,28 @@ func (m *Meta) CreateTableOrView(dbID int64, tableInfo *model.TableInfo) error {
 	return m.txn.HSet(dbKey, tableKey, data)
 }
 
+// CreateTableOrMaterializedView creates a table with tableInfo in database.
+func (m *Meta) CreateTableOrMaterializedView(dbID int64, tableInfo *model.TableInfo) error {
+	// Check if db exists.
+	dbKey := m.dbKey(dbID)
+	if err := m.checkDBExists(dbKey); err != nil {
+		return errors.Trace(err)
+	}
+
+	// Check if table exists.
+	tableKey := m.tableKey(tableInfo.ID)
+	if err := m.checkTableNotExists(dbKey, tableKey); err != nil {
+		return errors.Trace(err)
+	}
+
+	data, err := json.Marshal(tableInfo)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	return m.txn.HSet(dbKey, tableKey, data)
+}
+
 // CreateTableAndSetAutoID creates a table with tableInfo in database,
 // and rebases the table autoID.
 func (m *Meta) CreateTableAndSetAutoID(dbID int64, tableInfo *model.TableInfo, autoIncID, autoRandID int64) error {

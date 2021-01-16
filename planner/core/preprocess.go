@@ -141,6 +141,10 @@ func (p *preprocessor) Enter(in ast.Node) (out ast.Node, skipChildren bool) {
 		p.flag |= inCreateOrDropTable
 		p.checkCreateViewGrammar(node)
 		p.checkCreateViewWithSelectGrammar(node)
+	case *ast.CreateMaterializedViewStmt:
+		p.flag |= inCreateOrDropTable
+		p.checkCreateMaterializedViewGrammar(node)
+		p.checkCreateMaterializedViewWithSelectGrammar(node)
 	case *ast.DropTableStmt:
 		p.flag |= inCreateOrDropTable
 		p.stmtTp = TypeDrop
@@ -323,6 +327,8 @@ func (p *preprocessor) Leave(in ast.Node) (out ast.Node, ok bool) {
 		p.checkAutoIncrement(x)
 		p.checkContainDotColumn(x)
 	case *ast.CreateViewStmt:
+		p.flag &= ^inCreateOrDropTable
+	case *ast.CreateMaterializedViewStmt:
 		p.flag &= ^inCreateOrDropTable
 	case *ast.DropTableStmt, *ast.AlterTableStmt, *ast.RenameTableStmt:
 		p.flag &= ^inCreateOrDropTable
@@ -650,6 +656,45 @@ func (p *preprocessor) checkCreateViewWithSelectGrammar(stmt *ast.CreateViewStmt
 	case *ast.SetOprStmt:
 		for _, selectStmt := range stmt.SelectList.Selects {
 			p.checkCreateViewWithSelect(selectStmt)
+			if p.err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (p *preprocessor) checkCreateMaterializedViewGrammar(stmt *ast.CreateMaterializedViewStmt) {
+	vName := stmt.MaterializedViewName.Name.String()
+	if isIncorrectName(vName) {
+		p.err = ddl.ErrWrongTableName.GenWithStackByArgs(vName)
+		return
+	}
+	for _, col := range stmt.Cols {
+		if isIncorrectName(col.String()) {
+			p.err = ddl.ErrWrongColumnName.GenWithStackByArgs(col)
+			return
+		}
+	}
+}
+
+func (p *preprocessor) checkCreateMaterializedViewWithSelect(stmt *ast.SelectStmt) {
+	if stmt.SelectIntoOpt != nil {
+		p.err = ddl.ErrViewSelectClause.GenWithStackByArgs("INFO")
+		return
+	}
+	if stmt.LockTp != ast.SelectLockNone {
+		stmt.LockTp = ast.SelectLockNone
+		return
+	}
+}
+
+func (p *preprocessor) checkCreateMaterializedViewWithSelectGrammar(stmt *ast.CreateMaterializedViewStmt) {
+	switch stmt := stmt.Select.(type) {
+	case *ast.SelectStmt:
+		p.checkCreateViewWithSelect(stmt)
+	case *ast.UnionStmt:
+		for _, selectStmt := range stmt.SelectList.Selects {
+			p.checkCreateMaterializedViewWithSelect(selectStmt)
 			if p.err != nil {
 				return
 			}

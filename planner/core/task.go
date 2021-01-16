@@ -80,6 +80,7 @@ type copTask struct {
 
 	// For table partition.
 	partitionInfo PartitionInfo
+	isMaterializedView bool
 }
 
 func (t *copTask) invalid() bool {
@@ -787,13 +788,21 @@ func (t *copTask) convertToRootTaskImpl(ctx sessionctx.Context) *rootTask {
 			}
 		}
 		ts := tp.(*PhysicalTableScan)
-		p := PhysicalTableReader{
-			tablePlan:      t.tablePlan,
-			StoreType:      ts.StoreType,
-			IsCommonHandle: ts.Table.IsCommonHandle,
-		}.Init(ctx, t.tablePlan.SelectBlockOffset())
-		p.PartitionInfo = t.partitionInfo
-		p.stats = t.tablePlan.statsInfo()
+		if t.isMaterializedView {
+			p := PhysicalMaterializedViewReader{
+				tablePlan: t.tablePlan,
+			}.Init(ctx, t.tablePlan.SelectBlockOffset())
+			p.stats = t.tablePlan.statsInfo()
+			newTask.p = p
+		} else {
+			p := PhysicalTableReader{
+				tablePlan:      t.tablePlan,
+				StoreType:      ts.StoreType,
+				IsCommonHandle: ts.Table.IsCommonHandle,
+			}.Init(ctx, t.tablePlan.SelectBlockOffset())
+			p.PartitionInfo = t.partitionInfo
+			p.stats = t.tablePlan.statsInfo()
+		}
 		if needExtraProj {
 			proj := PhysicalProjection{Exprs: expression.Column2Exprs(prevSchema.Columns)}.Init(ts.ctx, ts.stats, ts.SelectBlockOffset(), nil)
 			proj.SetSchema(prevSchema)

@@ -631,6 +631,8 @@ func (w *worker) runDDLJob(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, 
 		ver, err = onRepairTable(d, t, job)
 	case model.ActionCreateView:
 		ver, err = onCreateView(d, t, job)
+	case model.ActionCreateMaterializedView:
+		ver, err = onCreateMaterializedView(d, t, job)
 	case model.ActionDropTable, model.ActionDropView, model.ActionDropSequence:
 		ver, err = onDropTableOrView(t, job)
 	case model.ActionDropTablePartition:
@@ -868,6 +870,19 @@ func updateSchemaVersion(t *meta.Meta, job *model.Job) (int64, error) {
 			diff.AffectedOpts = buildPlacementAffects(oldIDs, newIDs)
 		}
 	case model.ActionCreateView:
+		tbInfo := &model.TableInfo{}
+		var orReplace bool
+		var oldTbInfoID int64
+		if err := job.DecodeArgs(tbInfo, &orReplace, &oldTbInfoID); err != nil {
+			return 0, errors.Trace(err)
+		}
+		// When the statement is "create or replace view " and we need to drop the old view,
+		// it has two table IDs and should be handled differently.
+		if oldTbInfoID > 0 && orReplace {
+			diff.OldTableID = oldTbInfoID
+		}
+		diff.TableID = tbInfo.ID
+	case model.ActionCreateMaterializedView:
 		tbInfo := &model.TableInfo{}
 		var orReplace bool
 		var oldTbInfoID int64

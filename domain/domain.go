@@ -33,6 +33,7 @@ import (
 	"github.com/pingcap/parser/terror"
 	"github.com/pingcap/tidb/bindinfo"
 	"github.com/pingcap/tidb/config"
+	"github.com/pingcap/tidb/consumer"
 	"github.com/pingcap/tidb/ddl"
 	ddlutil "github.com/pingcap/tidb/ddl/util"
 	"github.com/pingcap/tidb/domain/infosync"
@@ -1054,6 +1055,25 @@ func (do *Domain) TelemetryLoop(ctx sessionctx.Context) {
 			}
 		}
 	}()
+}
+
+func (do *Domain) UpdateMaterializedViewLoop() error {
+	do.wg.Add(1)
+	go func() {
+		defer func() {
+			do.wg.Done()
+			logutil.BgLogger().Info("UpdateMaterializedViewLoop exited.")
+		}()
+		go consumer.CdcStart()
+		for {
+			is := do.infoHandle.Get()
+			mvs := is.GetAllMaterializedViews()
+			logutil.BgLogger().Info(fmt.Sprintf("UpdateMaterializedViewLoop get MVS, %d", len(mvs)))
+			time.Sleep(1 * time.Second)
+		}
+	}()
+
+	return nil
 }
 
 // StatsHandle returns the statistic handle.

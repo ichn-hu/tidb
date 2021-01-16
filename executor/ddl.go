@@ -92,6 +92,8 @@ func (e *DDLExec) Next(ctx context.Context, req *chunk.Chunk) (err error) {
 		err = e.executeCreateTable(x)
 	case *ast.CreateViewStmt:
 		err = e.executeCreateView(x)
+	case *ast.CreateMaterializedViewStmt:
+		err = e.executeCreateMaterializedView(x)
 	case *ast.DropIndexStmt:
 		err = e.executeDropIndex(x)
 	case *ast.DropDatabaseStmt:
@@ -208,6 +210,11 @@ func (e *DDLExec) executeCreateTable(s *ast.CreateTableStmt) error {
 
 func (e *DDLExec) executeCreateView(s *ast.CreateViewStmt) error {
 	err := domain.GetDomain(e.ctx).DDL().CreateView(e.ctx, s)
+	return err
+}
+
+func (e *DDLExec) executeCreateMaterializedView(s *ast.CreateMaterializedViewStmt) error {
+	err := domain.GetDomain(e.ctx).DDL().CreateMaterializedView(e.ctx, s)
 	return err
 }
 

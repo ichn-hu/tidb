@@ -63,7 +63,7 @@ func (b *Builder) ApplyDiff(m *meta.Meta, diff *model.SchemaDiff) ([]int64, erro
 		newTableID = diff.TableID
 	case model.ActionDropTable, model.ActionDropView, model.ActionDropSequence:
 		oldTableID = diff.TableID
-	case model.ActionTruncateTable, model.ActionCreateView, model.ActionExchangeTablePartition:
+	case model.ActionTruncateTable, model.ActionCreateView, model.ActionCreateMaterializedView, model.ActionExchangeTablePartition:
 		oldTableID = diff.OldTableID
 		newTableID = diff.TableID
 	default:
