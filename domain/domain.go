@@ -15,6 +15,7 @@ package domain
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1006,6 +1007,25 @@ func (do *Domain) TelemetryLoop(ctx sessionctx.Context) {
 			}
 		}
 	}()
+}
+
+
+func (do *Domain) UpdateMaterializedViewLoop() error {
+	do.wg.Add(1)
+	go func() {
+		defer func() {
+			do.wg.Done()
+			logutil.BgLogger().Info("UpdateMaterializedViewLoop exited.")
+		}()
+		for {
+			is := do.infoHandle.Get()
+			mvs := is.GetAllMaterializedViews()
+			logutil.BgLogger().Info(fmt.Sprintf("UpdateMaterializedViewLoop get MVS, %d", len(mvs)))
+			time.Sleep(1*time.Second)
+		}
+	}()
+
+	return nil
 }
 
 // StatsHandle returns the statistic handle.
