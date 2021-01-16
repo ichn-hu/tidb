@@ -2908,12 +2908,16 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 		return b.BuildDataSourceFromView(ctx, dbName, tableInfo)
 	}
 
+	var mp LogicalPlan
 	if tableInfo.IsMaterializedView() {
 		if b.inDeleteStmt || b.inUpdateStmt {
 			return nil, ErrBadTable // can't update view
 		}
 		//NOTION: comment next sentence to make materialized view a real one, or it's identical to view
-		return b.BuildDataSourceFromMaterializedView(ctx, dbName, tableInfo)
+		mp, err = b.BuildDataSourceFromMaterializedView(ctx, dbName, tableInfo)
+		if err != nil {
+			return mp, err
+		}
 	}
 
 	if tableInfo.GetPartitionInfo() != nil {

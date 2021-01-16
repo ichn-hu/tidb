@@ -433,6 +433,11 @@ func (p PhysicalTableReader) Init(ctx sessionctx.Context, offset int) *PhysicalT
 }
 
 func (p PhysicalMaterializedViewReader) Init(ctx sessionctx.Context, offset int) *PhysicalMaterializedViewReader {
+	p.basePhysicalPlan = newBasePhysicalPlan(ctx, plancodec.TypeTableReader, &p, offset)
+	if p.tablePlan != nil {
+		//p.TablePlans = flattenPushDownPlan(p.tablePlan)
+		p.schema = p.tablePlan.Schema()
+	}
 	return &p
 }
 

@@ -748,7 +748,9 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 		}
 		ts := tp.(*PhysicalTableScan)
 		if t.isMaterializedView {
-			p := PhysicalMaterializedViewReader{}.Init(ctx, t.tablePlan.SelectBlockOffset())
+			p := PhysicalMaterializedViewReader{
+				tablePlan: t.tablePlan,
+			}.Init(ctx, t.tablePlan.SelectBlockOffset())
 			p.stats = t.tablePlan.statsInfo()
 			newTask.p = p
 		} else {
