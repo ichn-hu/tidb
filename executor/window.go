@@ -84,8 +84,9 @@ func (e *WindowExec) consumeOneGroup(ctx context.Context) error {
 			e.executed = true
 			return e.consumeGroupRows(groupRows)
 		}
-		// 为啥这里不用管前面的结果啊？
 		_, err = e.groupChecker.splitIntoGroups(e.childResult)
+		// Q: 为啥这里不用管前面的结果啊？ splitIntoGroups 返回的第一个值是是否和前一个 chunk 最后一行一样
+		// A: 因为已经 isExhausted 了，即已经明确知道当前 partition 结束了
 		if err != nil {
 			return errors.Trace(err)
 		}
@@ -97,6 +98,7 @@ func (e *WindowExec) consumeOneGroup(ctx context.Context) error {
 
 	for meetLastGroup := end == e.childResult.NumRows(); meetLastGroup; {
 		meetLastGroup = false
+		// WTF: 这是来搞笑的吗？
 		eof, err := e.fetchChild(ctx)
 		if err != nil {
 			return errors.Trace(err)
@@ -119,10 +121,12 @@ func (e *WindowExec) consumeOneGroup(ctx context.Context) error {
 			meetLastGroup = end == e.childResult.NumRows()
 		}
 	}
+	// WTF: 这里不 oom 我是狗
 	return e.consumeGroupRows(groupRows)
 }
 
 func (e *WindowExec) consumeGroupRows(groupRows []chunk.Row) (err error) {
+	fmt.Println("consumeGroupRows - to process ", len(groupRows))
 	remainingRowsInGroup := len(groupRows)
 	if remainingRowsInGroup == 0 {
 		return nil
@@ -135,7 +139,7 @@ func (e *WindowExec) consumeGroupRows(groupRows []chunk.Row) (err error) {
 		// TODO: Combine these three methods.
 		// The old implementation needs the processor has these three methods
 		// but now it does not have to.
-		fmt.Println("number of groupRows processed", len(groupRows), "remained", remainingRowsInGroup)
+		//fmt.Println("number of groupRows processed", len(groupRows), "remained", remainingRowsInGroup)
 		groupRows, err = e.processor.consumeGroupRows(e.ctx, groupRows)
 		if err != nil {
 			return errors.Trace(err)
