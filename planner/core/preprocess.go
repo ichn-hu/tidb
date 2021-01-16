@@ -614,7 +614,6 @@ func (p *preprocessor) checkCreateMaterializedViewWithSelect(stmt *ast.SelectStm
 	}
 }
 
-
 func (p *preprocessor) checkCreateMaterializedViewWithSelectGrammar(stmt *ast.CreateMaterializedViewStmt) {
 	switch stmt := stmt.Select.(type) {
 	case *ast.SelectStmt:

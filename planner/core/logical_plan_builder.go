@@ -2424,8 +2424,8 @@ func unfoldWildStar(field *ast.SelectField, outputName types.NameSlice, column [
 			continue
 		}
 		if (dbName.L == "" || dbName.L == name.DBName.L) &&
-			(tblName.L == "" || tblName.L == name.TblName.L) &&
-			col.ID != model.ExtraHandleID {
+			(tblName.L == "" || tblName.L == name.TblName.L) {
+		//&& col.ID != model.ExtraHandleID
 			colName := &ast.ColumnNameExpr{
 				Name: &ast.ColumnName{
 					Schema: name.DBName,
@@ -3036,7 +3036,7 @@ func (b *PlanBuilder) buildDataSource(ctx context.Context, tn *ast.TableName, as
 		preferPartitions:    make(map[int][]model.CIStr),
 		is:                  b.is,
 		isForUpdateRead:     b.isForUpdateRead,
-		isMaterializedView: tableInfo.IsMaterializedView(),
+		isMaterializedView:  tableInfo.IsMaterializedView(),
 	}.Init(b.ctx, b.getSelectOffset())
 
 	var handleCol *expression.Column

@@ -98,7 +98,7 @@ func (p *PhysicalTableReader) GetTableScan() *PhysicalTableScan {
 
 type PhysicalMaterializedViewReader struct {
 	physicalSchemaProducer
-	tablePlan  PhysicalPlan
+	tablePlan PhysicalPlan
 }
 
 // GetTablePlan exports the tablePlan.
@@ -121,7 +121,6 @@ func (p *PhysicalMaterializedViewReader) GetTableScan() *PhysicalTableScan {
 		}
 	}
 }
-
 
 // GetPhysicalTableReader returns PhysicalTableReader for logical TiKVSingleGather.
 func (sg *TiKVSingleGather) GetPhysicalTableReader(schema *expression.Schema, stats *property.StatsInfo, props ...*property.PhysicalProperty) *PhysicalTableReader {

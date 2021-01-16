@@ -1188,10 +1188,10 @@ func (ds *DataSource) convertToTableScan(prop *property.PhysicalProperty, candid
 		cost = 0 // we will use table scan, and make sure it is selected
 	}
 	copTask := &copTask{
-		tablePlan:         ts,
-		indexPlanFinished: true,
-		tblColHists:       ds.TblColHists,
-		cst:               cost,
+		tablePlan:          ts,
+		indexPlanFinished:  true,
+		tblColHists:        ds.TblColHists,
+		cst:                cost,
 		isMaterializedView: ds.isMaterializedView,
 	}
 	task = copTask

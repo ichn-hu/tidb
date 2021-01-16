@@ -67,7 +67,7 @@ type copTask struct {
 	idxMergePartPlans []PhysicalPlan
 	// rootTaskConds stores select conditions containing virtual columns.
 	// These conditions can't push to TiKV, so we have to add a selection for rootTask
-	rootTaskConds []expression.Expression
+	rootTaskConds      []expression.Expression
 	isMaterializedView bool
 }
 
@@ -748,7 +748,7 @@ func finishCopTask(ctx sessionctx.Context, task task) task {
 		}
 		ts := tp.(*PhysicalTableScan)
 		if t.isMaterializedView {
-			p := PhysicalMaterializedViewReader {}.Init(ctx, t.tablePlan.SelectBlockOffset())
+			p := PhysicalMaterializedViewReader{}.Init(ctx, t.tablePlan.SelectBlockOffset())
 			p.stats = t.tablePlan.statsInfo()
 			newTask.p = p
 		} else {

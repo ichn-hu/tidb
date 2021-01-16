@@ -100,6 +100,15 @@ func createTableOrViewWithCheck(t *meta.Meta, job *model.Job, schemaID int64, tb
 	return t.CreateTableOrView(schemaID, tbInfo)
 }
 
+func createTableOrMaterializedViewWithCheck(t *meta.Meta, job *model.Job, schemaID int64, tbInfo *model.TableInfo) error {
+	err := checkTableInfoValid(tbInfo)
+	if err != nil {
+		job.State = model.JobStateCancelled
+		return errors.Trace(err)
+	}
+	return t.CreateTableOrMaterializedView(schemaID, tbInfo)
+}
+
 func repairTableOrViewWithCheck(t *meta.Meta, job *model.Job, schemaID int64, tbInfo *model.TableInfo) error {
 	err := checkTableInfoValid(tbInfo)
 	if err != nil {
@@ -202,13 +211,13 @@ func onCreateMaterializedView(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int6
 				return ver, errors.Trace(err)
 			}
 		}
-		err = createTableOrViewWithCheck(t, job, schemaID, tbInfo)
+		err = createTableOrMaterializedViewWithCheck(t, job, schemaID, tbInfo)
 		if err != nil {
 			return ver, errors.Trace(err)
 		}
 		// Finish this job.
 		job.FinishTableJob(model.JobStateDone, model.StatePublic, ver, tbInfo)
-		asyncNotifyEvent(d, &util.Event{Tp: model.ActionCreateView, TableInfo: tbInfo})
+		asyncNotifyEvent(d, &util.Event{Tp: model.ActionCreateMaterializedView, TableInfo: tbInfo})
 		return ver, nil
 	default:
 		return ver, ErrInvalidDDLState.GenWithStackByArgs("table", tbInfo.State)

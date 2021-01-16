@@ -91,4 +91,4 @@ require (
 
 go 1.13
 
-replace github.com/pingcap/parser => github.com/cosmic-jc/parser v0.0.0-20210116141248-a48b927e9d7d
+replace github.com/pingcap/parser => github.com/cosmic-jc/parser v0.0.0-20210116142530-fe737a24bc26
