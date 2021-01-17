@@ -682,23 +682,23 @@ func (p *preprocessor) checkCreateMaterializedViewWithSelect(stmt *ast.SelectStm
 		p.err = ddl.ErrViewSelectClause.GenWithStackByArgs("INFO")
 		return
 	}
-	if stmt.LockTp != ast.SelectLockNone {
-		stmt.LockTp = ast.SelectLockNone
-		return
-	}
+	//if stmt.LockTp != ast.SelectLockNone {
+	//	stmt.LockTp = ast.SelectLockNone
+	//	return
+	//}
 }
 
 func (p *preprocessor) checkCreateMaterializedViewWithSelectGrammar(stmt *ast.CreateMaterializedViewStmt) {
 	switch stmt := stmt.Select.(type) {
 	case *ast.SelectStmt:
 		p.checkCreateViewWithSelect(stmt)
-	case *ast.UnionStmt:
-		for _, selectStmt := range stmt.SelectList.Selects {
-			p.checkCreateMaterializedViewWithSelect(selectStmt)
-			if p.err != nil {
-				return
-			}
-		}
+	//case *ast.UnionStmt:
+	//	for _, selectStmt := range stmt.SelectList.Selects {
+	//		p.checkCreateMaterializedViewWithSelect(selectStmt)
+	//		if p.err != nil {
+	//			return
+	//		}
+	//	}
 	}
 }
 

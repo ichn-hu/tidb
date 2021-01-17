@@ -788,6 +788,7 @@ func (t *copTask) convertToRootTaskImpl(ctx sessionctx.Context) *rootTask {
 			}
 		}
 		ts := tp.(*PhysicalTableScan)
+		var p PhysicalPlan
 		if t.isMaterializedView {
 			p := PhysicalMaterializedViewReader{
 				tablePlan: t.tablePlan,

@@ -131,8 +131,8 @@ func (p *PhysicalMaterializedViewReader) GetTableScan() *PhysicalTableScan {
 		} else if chCnt == 1 {
 			curPlan = curPlan.Children()[0]
 		} else {
-			join := curPlan.(*PhysicalBroadCastJoin)
-			curPlan = join.children[1-join.globalChildIndex]
+			//join := curPlan.(*PhysicalBroadCastJoin)
+			//curPlan = join.children[1-join.globalChildIndex]
 		}
 	}
 }
