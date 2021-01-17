@@ -79,7 +79,7 @@ type copTask struct {
 	rootTaskConds []expression.Expression
 
 	// For table partition.
-	partitionInfo PartitionInfo
+	partitionInfo      PartitionInfo
 	isMaterializedView bool
 }
 

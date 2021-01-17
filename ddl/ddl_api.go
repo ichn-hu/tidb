@@ -2031,6 +2031,7 @@ func buildMaterializedViewInfo(ctx sessionctx.Context, s *ast.CreateMaterialized
 	return &model.MaterializedViewInfo{Definer: s.Definer, Algorithm: s.Algorithm,
 		Security: s.Security, SelectStmt: sb.String(), CheckOption: s.CheckOption, Cols: nil}, nil
 }
+
 //
 //func checkPartitionByHash(ctx sessionctx.Context, tbInfo *model.TableInfo, s *ast.CreateTableStmt) error {
 //	pi := tbInfo.Partition

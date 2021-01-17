@@ -26,6 +26,12 @@ type MaterializedViewReaderExecutor struct {
 
 func (mvr *MaterializedViewReaderExecutor) Open(ctx context.Context) error {
 	fmt.Println("MVR Open")
+	txn, err := mvr.ctx.Txn(true)
+	if err != nil {
+		return err
+	}
+	ts := txn.StartTS()
+	_ = ts
 	return nil
 }
 

@@ -692,13 +692,13 @@ func (p *preprocessor) checkCreateMaterializedViewWithSelectGrammar(stmt *ast.Cr
 	switch stmt := stmt.Select.(type) {
 	case *ast.SelectStmt:
 		p.checkCreateViewWithSelect(stmt)
-	//case *ast.UnionStmt:
-	//	for _, selectStmt := range stmt.SelectList.Selects {
-	//		p.checkCreateMaterializedViewWithSelect(selectStmt)
-	//		if p.err != nil {
-	//			return
-	//		}
-	//	}
+		//case *ast.UnionStmt:
+		//	for _, selectStmt := range stmt.SelectList.Selects {
+		//		p.checkCreateMaterializedViewWithSelect(selectStmt)
+		//		if p.err != nil {
+		//			return
+		//		}
+		//	}
 	}
 }
 

@@ -33,7 +33,6 @@ import (
 	"github.com/pingcap/parser/terror"
 	"github.com/pingcap/tidb/bindinfo"
 	"github.com/pingcap/tidb/config"
-	"github.com/pingcap/tidb/consumer"
 	"github.com/pingcap/tidb/ddl"
 	ddlutil "github.com/pingcap/tidb/ddl/util"
 	"github.com/pingcap/tidb/domain/infosync"
@@ -1064,7 +1063,7 @@ func (do *Domain) UpdateMaterializedViewLoop() error {
 			do.wg.Done()
 			logutil.BgLogger().Info("UpdateMaterializedViewLoop exited.")
 		}()
-		go consumer.CdcStart()
+		//go consumer.CdcStart()
 		for {
 			is := do.infoHandle.Get()
 			mvs := is.GetAllMaterializedViews()
