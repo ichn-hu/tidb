@@ -15,6 +15,7 @@ package chunk
 
 import (
 	"time"
+	"fmt"
 	"unsafe"
 
 	"github.com/pingcap/parser/mysql"
@@ -143,6 +144,15 @@ func (r Row) GetDatumRow(fields []*types.FieldType) []types.Datum {
 		datumRow = append(datumRow, datum)
 	}
 	return datumRow
+}
+
+// WillPanic tests for panic
+func (r Row) WillPanic(colIdx int) bool {
+	if len(r.c.columns[colIdx].nullBitmap) <= r.idx/8 {
+		fmt.Printf("will panic: colIdx %d rowIdx %d chkLen %d nbmLen %d\n", colIdx, r.idx, r.c.columns[colIdx].length, len(r.c.columns[colIdx].nullBitmap))
+		return true
+	}
+	return false
 }
 
 // GetDatum implements the chunk.Row interface.

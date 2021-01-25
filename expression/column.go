@@ -203,6 +203,11 @@ func (col *Column) Eval(row chunk.Row) (types.Datum, error) {
 	return row.GetDatum(col.Index, col.RetType), nil
 }
 
+// WillPanic tests if it will panic for evaluation
+func (col *Column) WillPanic(r chunk.Row) bool {
+	return r.WillPanic(col.Index)
+}
+
 // EvalInt returns int representation of Column.
 func (col *Column) EvalInt(ctx sessionctx.Context, row chunk.Row) (int64, bool, error) {
 	if col.GetType().Hybrid() {

@@ -17,6 +17,7 @@ import (
 	"context"
 	"sync"
 	"time"
+	"fmt"
 
 	"github.com/opentracing/opentracing-go"
 	"github.com/pingcap/errors"
@@ -720,6 +721,9 @@ func (e *HashAggExec) execute(ctx context.Context) (err error) {
 			for i, af := range e.PartialAggFuncs {
 				err = af.UpdatePartialResult(e.ctx, []chunk.Row{row}, partialResults[i])
 				if err != nil {
+					if err.Error() == "will panic" {
+						fmt.Printf("will panic: %s", e.schema)
+					}
 					return err
 				}
 			}

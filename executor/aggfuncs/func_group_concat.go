@@ -15,6 +15,7 @@ package aggfuncs
 
 import (
 	"bytes"
+	"fmt"
 	"container/heap"
 	"sort"
 	"sync/atomic"
@@ -367,7 +368,7 @@ func (e *groupConcatOrder) UpdatePartialResult(sctx sessionctx.Context, rowsInGr
 	p := (*partialResult4GroupConcatOrder)(pr)
 	p.topN.sctx = sctx
 	v, isNull := "", false
-	for _, row := range rowsInGroup {
+	for r, row := range rowsInGroup {
 		buffer := new(bytes.Buffer)
 		for _, arg := range e.args {
 			v, isNull, err = arg.EvalString(sctx, row)
@@ -386,7 +387,20 @@ func (e *groupConcatOrder) UpdatePartialResult(sctx sessionctx.Context, rowsInGr
 			buffer:  buffer,
 			byItems: make([]types.Datum, 0, len(e.byItems)),
 		}
-		for _, byItem := range e.byItems {
+		for i, byItem := range e.byItems {
+			col, isCol := byItem.Expr.(*expression.Column)
+			if isCol {
+				if col.WillPanic(row) {
+					fmt.Println("will panic:")
+					fmt.Printf("byItems: ")
+					for j, bi := range e.byItems {
+						fmt.Printf("%d:%s ", j, bi)
+					}
+					fmt.Println()
+					fmt.Printf("paniced on %d th item for %d th row out of total %d rows\n", i, r, len(rowsInGroup))
+					return fmt.Errorf("will panic")
+				}
+			}
 			d, err := byItem.Expr.Eval(row)
 			if err != nil {
 				return err
