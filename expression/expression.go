@@ -1157,6 +1157,8 @@ func canScalarFuncPushDown(scalarFunc *ScalarFunction, pc PbConverter, storeType
 		return false
 	}
 
+	// check hint here?
+
 	// Check whether all of its parameters can be pushed.
 	for _, arg := range scalarFunc.GetArgs() {
 		if !canExprPushDown(arg, pc, storeType) {

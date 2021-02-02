@@ -101,7 +101,22 @@ func (p *LogicalUnionScan) PredicatePushDown(predicates []expression.Expression)
 func (ds *DataSource) PredicatePushDown(predicates []expression.Expression) ([]expression.Expression, LogicalPlan) {
 	predicates = expression.PropagateConstant(ds.ctx, predicates)
 	ds.allConds = predicates
+	if ds.DBName.L == "" {
+
+	}
+	banned := make([]expression.Expression, 0, len(predicates))
+	allowed := make([]expression.Expression, 0, len(predicates))
+	for _, predicate := range predicates {
+		sf, ok := predicate.(*expression.ScalarFunction)
+		if ok && sf.FuncName.L == "in" {
+			banned = append(banned, predicate)
+		} else {
+			allowed = append(allowed, predicate)
+		}
+	}
+	predicates = allowed
 	ds.pushedDownConds, predicates = expression.PushDownExprs(ds.ctx.GetSessionVars().StmtCtx, predicates, ds.ctx.GetClient(), kv.UnSpecified)
+	predicates = append(predicates, banned...)
 	return predicates, ds
 }
 
