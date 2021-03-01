@@ -50,6 +50,7 @@ func (e *PipelinedWindowExec) Close() error {
 	return errors.Trace(e.baseExecutor.Close())
 }
 
+// Open implements the Executor Open interface
 func (e *PipelinedWindowExec) Open(ctx context.Context) error {
 	e.consumed = true
 	return e.baseExecutor.Open(ctx)
