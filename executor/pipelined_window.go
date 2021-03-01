@@ -42,10 +42,10 @@ type PipelinedWindowExec struct {
 
 	numWindowFuncs int
 	processor      windowProcessor
-	p processor // TODO(zhifeng): you don't need a processor, just make it into the executor
-	rows []chunk.Row
-	consumed bool
-	newPartition bool
+	p              processor // TODO(zhifeng): you don't need a processor, just make it into the executor
+	rows           []chunk.Row
+	consumed       bool
+	newPartition   bool
 }
 
 // Close implements the Executor Close interface.
@@ -90,11 +90,18 @@ func (e *PipelinedWindowExec) Next(ctx context.Context, chk *chunk.Chunk) (err e
 				continue
 			}
 		}
-		if e.newPartition && len(e.rows) == 0 {
-			// no more data
-			break
+		// reaching here, e.consumed must be false. Initially, e.consumed is default to true, and the above branch will be
+		// entered, and e.consumed will be false. If it enters a new partition, the e.consumed will be kept as false before
+		// coming here.
+		if e.newPartition {
+			e.p.reset()
+			if len(e.rows) == 0 {
+				// no more data
+				break
+			}
 		}
 		wantMore, err = e.p.consume(e.ctx, e.rows)
+		e.consumed = true // TODO(zhifeng): move this into consume() after absorbing p into e
 		if err != nil {
 			return err
 		}
@@ -248,12 +255,12 @@ func (e *PipelinedWindowExec) copyChk(src, dst *chunk.Chunk) error {
 }
 
 type processor struct {
-	windowFuncs    []aggfuncs.AggFunc
+	windowFuncs        []aggfuncs.AggFunc
 	slidingWindowFuncs []aggfuncs.SlidingWindowAggFunc
-	partialResults []aggfuncs.PartialResult
-	start          *core.FrameBound
-	end            *core.FrameBound
-	curRowIdx      uint64
+	partialResults     []aggfuncs.PartialResult
+	start              *core.FrameBound
+	end                *core.FrameBound
+	curRowIdx          uint64
 	// curStartRow and curEndRow defines the current frame range
 	curStartRow uint64
 	curEndRow   uint64
@@ -262,7 +269,7 @@ type processor struct {
 	whole        bool
 	rowCnt       uint64
 	isRangeFrame bool
-	available int64
+	available    int64
 }
 
 func (p *processor) init() {
