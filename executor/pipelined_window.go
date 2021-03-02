@@ -15,6 +15,8 @@ package executor
 
 import (
 	"context"
+	"github.com/pingcap/parser/ast"
+	"github.com/pingcap/tidb/expression"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/executor/aggfuncs"
@@ -178,12 +180,19 @@ type processor struct {
 	// curStartRow and curEndRow defines the current frame range
 	curStartRow uint64
 	curEndRow   uint64
+	orderByCols     []*expression.Column
+	// expectedCmpResult is used to decide if one value is included in the frame.
+	expectedCmpResult int64
 	// rows keeps rows starting from curStartRow, TODO(zhifeng): make it a queue
 	rows         []chunk.Row
 	whole        bool
 	rowCnt       uint64
 	isRangeFrame bool
-	available    int64
+	available    uint64
+}
+
+func (p *processor) getRow(i uint64) chunk.Row {
+	return p.rows[i-p.curStartRow]
 }
 
 func (p *processor) init() {
@@ -212,8 +221,15 @@ func (p *processor) consume(ctx sessionctx.Context, rows []chunk.Row) (more int6
 			return
 		}
 	}
-
-	return
+	if p.end.UnBounded {
+		if !p.whole {
+			// we can't proceed until the whole partition is consumed
+			return -1, nil
+		}
+		return 0, nil
+	}
+	// let's just try produce
+	return 0, nil
 }
 
 // finish is called upon a whole partition is consumed
@@ -221,11 +237,126 @@ func (p *processor) finish() {
 	p.whole = true
 }
 
+func (p *processor) getStart(ctx sessionctx.Context) (uint64, error) {
+	if p.start.UnBounded {
+		return 0, nil
+	}
+	if p.isRangeFrame {
+		var start uint64
+		for start = p.curStartRow; start < p.rowCnt; start++ {
+			var res int64
+			var err error
+			for i := range p.orderByCols {
+				res, _, err = p.end.CmpFuncs[i](ctx, p.end.CalcFuncs[i], p.orderByCols[i], p.getRow(start), p.getRow(p.curRowIdx))
+				if err != nil {
+					return 0, err
+				}
+				if res != 0 {
+					break
+				}
+			}
+			// For asc, break when the calculated result is greater than the current value.
+			// For desc, break when the calculated result is less than the current value.
+			if res != p.expectedCmpResult {
+				break
+			}
+		}
+		return start, nil
+	} else {
+		switch p.start.Type {
+		case ast.Preceding:
+			if p.curRowIdx >= p.start.Num {
+				return p.curRowIdx - p.start.Num, nil
+			}
+			return 0, nil
+		case ast.Following:
+			return p.curRowIdx + p.end.Num, nil
+		case ast.CurrentRow:
+			return p.curRowIdx, nil
+		}
+	}
+	// It will never reach here.
+	return 0, nil
+}
+
+func (p *processor) getEnd(ctx sessionctx.Context) (uint64, error) {
+	if p.end.UnBounded {
+		return p.rowCnt, nil
+	}
+	if p.isRangeFrame {
+		var end uint64
+		for end = p.curEndRow; end < p.rowCnt; end++ {
+			var res int64
+			var err error
+			for i := range p.orderByCols {
+				res, _, err = p.end.CmpFuncs[i](ctx, p.end.CalcFuncs[i], p.orderByCols[i], p.getRow(p.curRowIdx), p.getRow(end))
+				if err != nil {
+					return 0, err
+				}
+				if res != 0 {
+					break
+				}
+			}
+			// For asc, break when the calculated result is greater than the current value.
+			// For desc, break when the calculated result is less than the current value.
+			if res == p.expectedCmpResult {
+				break
+			}
+		}
+		return end, nil
+	} else {
+		switch p.end.Type {
+		case ast.Preceding:
+			if p.curRowIdx >= p.end.Num {
+				return p.curRowIdx - p.end.Num + 1, nil
+			}
+			return 0, nil
+		case ast.Following:
+			return p.curRowIdx + p.end.Num + 1, nil
+		case ast.CurrentRow:
+			return p.curRowIdx + 1, nil
+		}
+	}
+	// It will never reach here.
+	return 0, nil
+}
+
 // produce produces rows and append it to chk, return produced means number of rows appended into chunk, available means
 // number of rows processed but not fetched
 func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced int, err error) {
+	var (
+		initializedSlidingWindow bool
+		start uint64
+		end uint64
+	)
 	for !chk.IsFull() && p.curRowIdx < p.rowCnt {
-
+		start, err = p.getStart(ctx)
+		if err != nil {
+			return
+		}
+		end, err = p.getEnd(ctx)
+		if err != nil {
+			return
+		}
+		if end > p.rowCnt {
+			if !p.whole {
+				return
+			}
+			end = p.rowCnt
+		}
+		for i, wf := range p.windowFuncs {
+			slidingWindowAggFunc := p.slidingWindowFuncs[i]
+			if slidingWindowAggFunc != nil && initializedSlidingWindow {
+				err = slidingWindowAggFunc.Slide(ctx, p.rows, p.curStartRow, p.curEndRow, start - p.curStartRow, end - p.curEndRow, p.partialResults[i])
+				if err != nil {
+					return
+				}
+				err = wf.AppendFinalResult2Chunk(ctx, p.partialResults[i], chk)
+				if err != nil {
+					return
+				}
+			}
+		}
 	}
 	return
 }
