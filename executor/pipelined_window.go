@@ -31,11 +31,6 @@ type PipelinedWindowExec struct {
 	// childResult stores the child chunk
 	childResult *chunk.Chunk
 	// executed indicates the child executor is drained or something unexpected happened.
-	executed bool
-	// resultChunks stores the chunks to return
-	resultChunks []*chunk.Chunk
-	// remainingRowsInChunk indicates how many rows the resultChunks[i] is not prepared.
-	remainingRowsInChunk []int
 
 	numWindowFuncs int
 	processor      windowProcessor
@@ -53,6 +48,7 @@ func (e *PipelinedWindowExec) Close() error {
 // Open implements the Executor Open interface
 func (e *PipelinedWindowExec) Open(ctx context.Context) error {
 	e.consumed = true
+	e.p.init()
 	return e.baseExecutor.Open(ctx)
 }
 
@@ -108,8 +104,11 @@ func (e *PipelinedWindowExec) Next(ctx context.Context, chk *chunk.Chunk) (err e
 }
 
 func (e *PipelinedWindowExec) getRowsInPartition(ctx context.Context) (err error) {
-	e.newPartition = false
+	e.newPartition = true
+	// it should always be a new partition, unless it is the first group of a new chunk and the groupChecker.splitIntoGroups
+	// explicitly tell us that it is not
 	e.rows = e.rows[0:]
+	e.consumed = false
 
 	if e.groupChecker.isExhausted() {
 		var drained, samePartition bool
@@ -118,11 +117,12 @@ func (e *PipelinedWindowExec) getRowsInPartition(ctx context.Context) (err error
 			err = errors.Trace(err)
 		}
 		if drained {
-			e.newPartition = true
 			return nil
 		}
 		samePartition, err = e.groupChecker.splitIntoGroups(e.childResult)
-		e.newPartition = !samePartition
+		if samePartition {
+			e.newPartition = false // the only case that when getRowsInPartition gets called, it is not a new partition
+		}
 		if err != nil {
 			return errors.Trace(err)
 		}
@@ -131,12 +131,7 @@ func (e *PipelinedWindowExec) getRowsInPartition(ctx context.Context) (err error
 	for i := begin; i < end; i++ {
 		e.rows = append(e.rows, e.childResult.GetRow(i))
 	}
-	e.consumed = false
 	return
-}
-
-func (e *PipelinedWindowExec) preparedChunkAvailable() bool {
-	return len(e.resultChunks) > 0 && e.remainingRowsInChunk[0] == 0
 }
 
 func (e *PipelinedWindowExec) fetchChild(ctx context.Context) (EOF bool, err error) {
@@ -158,8 +153,6 @@ func (e *PipelinedWindowExec) fetchChild(ctx context.Context) (EOF bool, err err
 	if err != nil {
 		return false, err
 	}
-	e.resultChunks = append(e.resultChunks, resultChk)
-	e.remainingRowsInChunk = append(e.remainingRowsInChunk, numRows)
 
 	e.childResult = childResult
 	return false, nil
