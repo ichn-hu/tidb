@@ -189,10 +189,15 @@ type processor struct {
 	rowCnt       uint64
 	isRangeFrame bool
 	available    uint64
+	initializedSlidingWindow bool
 }
 
 func (p *processor) getRow(i uint64) chunk.Row {
 	return p.rows[i-p.curStartRow]
+}
+
+func (p *processor) getRows(s, e uint64) []chunk.Row {
+	return p.rows[s-p.curStartRow : e-p.curStartRow]
 }
 
 func (p *processor) init() {
@@ -325,7 +330,6 @@ func (p *processor) getEnd(ctx sessionctx.Context) (uint64, error) {
 // number of rows processed but not fetched
 func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced int, err error) {
 	var (
-		initializedSlidingWindow bool
 		start uint64
 		end uint64
 	)
@@ -346,17 +350,28 @@ func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced 
 		}
 		for i, wf := range p.windowFuncs {
 			slidingWindowAggFunc := p.slidingWindowFuncs[i]
-			if slidingWindowAggFunc != nil && initializedSlidingWindow {
-				err = slidingWindowAggFunc.Slide(ctx, p.rows, p.curStartRow, p.curEndRow, start - p.curStartRow, end - p.curEndRow, p.partialResults[i])
-				if err != nil {
-					return
-				}
-				err = wf.AppendFinalResult2Chunk(ctx, p.partialResults[i], chk)
-				if err != nil {
-					return
-				}
+			if slidingWindowAggFunc != nil && p.initializedSlidingWindow {
+				err = slidingWindowAggFunc.Slide(ctx, p.rows, p.curStartRow, p.curEndRow, start-p.curStartRow, end-p.curEndRow, p.partialResults[i])
+			} else {
+				// TODO(zhifeng): track memory useage here
+				_, err = wf.UpdatePartialResult(ctx, p.getRows(p.curStartRow, p.curEndRow), p.partialResults[i])
+			}
+			if err != nil {
+				return
+			}
+			err = wf.AppendFinalResult2Chunk(ctx, p.partialResults[i], chk)
+			if err != nil {
+				return
+			}
+			if slidingWindowAggFunc == nil {
+				wf.ResetPartialResult(p.partialResults[i])
+			}
+			if !p.initializedSlidingWindow {
+				p.initializedSlidingWindow = true
 			}
 		}
+		produced++
+		p.rows = p.rows[p.curStartRow:]
 	}
 	return
 }
@@ -366,4 +381,5 @@ func (p *processor) reset() {
 	p.curRowIdx = 0
 	p.rowCnt = 0
 	p.whole = false
+	p.initializedSlidingWindow = false
 }
