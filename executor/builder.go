@@ -3690,6 +3690,9 @@ func buildKvRangesForIndexJoin(ctx sessionctx.Context, tableID, indexID int64, l
 }
 
 func (b *executorBuilder) buildWindow(v *plannercore.PhysicalWindow) *WindowExec {
+	if b.ctx.GetSessionVars().EnableCascadesPlanner {
+
+	}
 	childExec := b.build(v.Children()[0])
 	if b.err != nil {
 		return nil

@@ -371,6 +371,7 @@ func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced 
 			}
 		}
 		produced++
+		p.curStartRow, p.curEndRow = start, end
 		p.rows = p.rows[p.curStartRow:]
 	}
 	return
