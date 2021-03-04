@@ -35,7 +35,6 @@ type PipelinedWindowExec struct {
 	// executed indicates the child executor is drained or something unexpected happened.
 
 	numWindowFuncs int
-	processor      windowProcessor
 	p              processor // TODO(zhifeng): you don't need a processor, just make it into the executor
 	rows           []chunk.Row
 	consumed       bool
@@ -51,6 +50,7 @@ func (e *PipelinedWindowExec) Close() error {
 func (e *PipelinedWindowExec) Open(ctx context.Context) error {
 	e.consumed = true
 	e.p.init()
+	e.rows = make([]chunk.Row, 0)
 	return e.baseExecutor.Open(ctx)
 }
 
@@ -201,10 +201,10 @@ func (p *processor) getRows(s, e uint64) []chunk.Row {
 }
 
 func (p *processor) init() {
-	slidingWindowAggFuncs := make([]aggfuncs.SlidingWindowAggFunc, len(p.windowFuncs))
+	p.slidingWindowFuncs = make([]aggfuncs.SlidingWindowAggFunc, len(p.windowFuncs))
 	for i, windowFunc := range p.windowFuncs {
 		if slidingWindowAggFunc, ok := windowFunc.(aggfuncs.SlidingWindowAggFunc); ok {
-			slidingWindowAggFuncs[i] = slidingWindowAggFunc
+			p.slidingWindowFuncs[i] = slidingWindowAggFunc
 		}
 	}
 }
