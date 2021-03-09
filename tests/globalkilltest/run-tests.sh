@@ -64,15 +64,16 @@ function start_cluster()
 function clean_cluster()
 {
     set +e
-    killall -9 -r tidb-server
-    killall -9 -r tikv-server
-    killall -9 -r pd-server
+    pkill -9 -f tidb-server
+    pkill -9 -f tikv-server
+    pkill -9 -f pd-server
     set -e
 }
 
 function go_tests()
 {
     go test -args $*
+#      go test -check.f TestLostConnection
 }
 
 while getopts "h" opt; do
@@ -86,7 +87,7 @@ done
 
 clean_cluster
 
-start_cluster
+#start_cluster
 
 go_tests
 
