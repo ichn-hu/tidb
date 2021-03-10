@@ -126,7 +126,7 @@ func clearStorage(store kv.Storage) error {
 	return txn.Commit(context.Background())
 }
 
-func clearETCD(ebd kv.EtcdBackend) error {
+func clearETCD(ebd tikv.EtcdBackend) error {
 	endpoints, err := ebd.EtcdAddrs()
 	if err != nil {
 		return err
@@ -190,7 +190,7 @@ func (s *testSessionSuiteBase) SetUpSuite(c *C) {
 		c.Assert(err, IsNil)
 		err = clearStorage(store)
 		c.Assert(err, IsNil)
-		err = clearETCD(store.(kv.EtcdBackend))
+		err = clearETCD(store.(tikv.EtcdBackend))
 		c.Assert(err, IsNil)
 		session.ResetStoreForWithTiKVTest(store)
 		s.store = store

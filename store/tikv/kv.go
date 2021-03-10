@@ -53,6 +53,13 @@ func createEtcdKV(addrs []string, tlsConfig *tls.Config) (*clientv3.Client, erro
 	return cli, nil
 }
 
+// EtcdBackend is used for judging a storage is a real TiKV.
+type EtcdBackend interface {
+	EtcdAddrs() ([]string, error)
+	TLSConfig() *tls.Config
+	StartGCWorker() error
+}
+
 // update oracle's lastTS every 2000ms.
 var oracleUpdateInterval = 2000
 
