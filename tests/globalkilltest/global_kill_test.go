@@ -133,7 +133,7 @@ func (s *TestGlobalKillSuite) connectPD() (cli *clientv3.Client, err error) {
 
 func (s *TestGlobalKillSuite) startTiKV(dataDir string) (err error) {
 	s.tikvProc = exec.Command(*tikvBinaryPath,
-		"--pd=127.0.0.1:2379",
+		fmt.Sprintf("--pd=%s", *pdClientPath),
 		fmt.Sprintf("--data-dir=tikv-%s", dataDir),
 		"--addr=0.0.0.0:20160",
 		"--log-file=tikv.log",
@@ -156,6 +156,7 @@ func (s *TestGlobalKillSuite) startPD(dataDir string) (err error) {
 	s.pdProc = exec.Command(*pdBinaryPath,
 		"--name=pd",
 		"--log-file=pd.log",
+		fmt.Sprintf("--client-urls=http://%s", *pdClientPath),
 		fmt.Sprintf("--data-dir=pd-%s", dataDir))
 	log.Infof("starting pd: %v", s.pdProc)
 	err = s.pdProc.Start()
