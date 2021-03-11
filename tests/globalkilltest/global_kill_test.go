@@ -72,6 +72,7 @@ type TestGlobalKillSuite struct {
 	pdCli *clientv3.Client
 	pdErr error
 
+	clusterId string
 	pdProc   *exec.Cmd
 	tikvProc *exec.Cmd
 }
@@ -80,6 +81,7 @@ func (s *TestGlobalKillSuite) SetUpSuite(c *C) {
 	err := logutil.InitLogger(&logutil.LogConfig{Config: zaplog.Config{Level: *logLevel}})
 	c.Assert(err, IsNil)
 
+	s.clusterId = strings.ReplaceAll(time.Now().String(), " ", "-")
 	err = s.startCluster()
 	c.Assert(err, IsNil)
 	s.pdCli, s.pdErr = s.connectPD()
@@ -131,10 +133,10 @@ func (s *TestGlobalKillSuite) connectPD() (cli *clientv3.Client, err error) {
 	return cli, nil
 }
 
-func (s *TestGlobalKillSuite) startTiKV() (err error) {
+func (s *TestGlobalKillSuite) startTiKV(dataDir string) (err error) {
 	s.tikvProc = exec.Command(*tikvBinaryPath,
 		"--pd=127.0.0.1:2379",
-		fmt.Sprintf("--data-dir=tikv-%s", strings.ReplaceAll(time.Now().String(), " ", "-")),
+		fmt.Sprintf("--data-dir=tikv-%s", dataDir),
 		"--addr=0.0.0.0:20160",
 		"--log-file=tikv.log",
 		"--advertise-addr=127.0.0.1:20160",
@@ -152,11 +154,11 @@ func (s *TestGlobalKillSuite) startTiKV() (err error) {
 	return nil
 }
 
-func (s *TestGlobalKillSuite) startPD() (err error) {
+func (s *TestGlobalKillSuite) startPD(dataDir string) (err error) {
 	s.pdProc = exec.Command(*pdBinaryPath,
 		"--name=pd",
 		"--log-file=pd.log",
-		fmt.Sprintf("--data-dir=pd-%s", strings.ReplaceAll(time.Now().String(), " ", "-")))
+		fmt.Sprintf("--data-dir=pd-%s", dataDir))
 	log.Infof("starting pd: %v", s.pdProc)
 	err = s.pdProc.Start()
 	if err != nil {
@@ -171,12 +173,12 @@ func (s *TestGlobalKillSuite) startPD() (err error) {
 }
 
 func (s *TestGlobalKillSuite) startCluster() (err error) {
-	err = s.startPD()
+	err = s.startPD(s.clusterId)
 	if err != nil {
 		return
 	}
 
-	err = s.startTiKV()
+	err = s.startTiKV(s.clusterId)
 	if err != nil {
 		return
 	}
@@ -198,7 +200,7 @@ func (s *TestGlobalKillSuite) cleanCluster() (err error) {
 		return
 	}
 	log.Info("cluster cleaned")
-	return
+	return nil
 }
 
 func (s *TestGlobalKillSuite) startTiDBWithoutPD(port int, statusPort int) (cmd *exec.Cmd, err error) {
@@ -629,23 +631,23 @@ func (s *TestGlobalKillSuite) TestLostConnection(c *C) {
 	log.Infof("sleep %v to wait for TiDB had detected lost connection restored", sleepTime)
 	time.Sleep(sleepTime)
 
-	//// check restored
-	//{
-	//	// [Test Scenario 6] New connections are accepted after PD lost connection for long time and then recovered.
-	//	db1, err := s.connectTiDB(port1)
-	//	c.Assert(err, IsNil)
-	//	defer db1.Close()
-	//
-	//	db2, err := s.connectTiDB(port2)
-	//	c.Assert(err, IsNil)
-	//	defer db2.Close()
-	//
-	//	// [Test Scenario 7] Connections can be killed after PD lost connection for long time and then recovered.
-	//	sleepTime := 2
-	//	elapsed := s.killByKillStatement(c, db1, db1, sleepTime)
-	//	c.Assert(elapsed, Less, time.Duration(sleepTime)*time.Second)
-	//
-	//	elapsed = s.killByKillStatement(c, db1, db2, sleepTime)
-	//	c.Assert(elapsed, Less, time.Duration(sleepTime)*time.Second)
-	//}
+	// check restored
+	{
+		// [Test Scenario 6] New connections are accepted after PD lost connection for long time and then recovered.
+		db1, err := s.connectTiDB(port1)
+		c.Assert(err, IsNil)
+		defer db1.Close()
+
+		db2, err := s.connectTiDB(port2)
+		c.Assert(err, IsNil)
+		defer db2.Close()
+
+		// [Test Scenario 7] Connections can be killed after PD lost connection for long time and then recovered.
+		sleepTime := 2
+		elapsed := s.killByKillStatement(c, db1, db1, sleepTime)
+		c.Assert(elapsed, Less, time.Duration(sleepTime)*time.Second)
+
+		elapsed = s.killByKillStatement(c, db1, db2, sleepTime)
+		c.Assert(elapsed, Less, time.Duration(sleepTime)*time.Second)
+	}
 }
