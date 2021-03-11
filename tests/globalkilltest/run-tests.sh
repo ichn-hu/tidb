@@ -30,14 +30,17 @@ function help_message()
     -s <tidb-server-path>: Use tidb-server in <tidb-server-path> for testing.
                            Defaults to "bin/globalkilltest_tidb-server".
 
+    -p <pd-server-path>: Use pd-server in <pd-server-path> for testing.
+                         Defaults to "bin/pd-server".
+
+    -k <tikv-server-path>: Use tikv-server in <tikv-server-path> for testing.
+                           Defaults to "bin/tikv-server".
+
     --tidb_start_port <port>: First TiDB server listening port. port ~ port+2 will be used.
                               Defaults to "5000".
 
     --tidb_status_port <port>: First TiDB server status listening port. port ~ port+2 will be used.
                                Defaults to "8000".
-
-    --pd_proxy_port <port>: PD proxy port. PD proxy is used to simulate lost connection between TiDB and PD.
-                            Defaults to "3379".
 
     --conn_lost <timeout in seconds>: Lost connection to PD timeout,
                                       should be the same as TiDB ldflag <ldflagLostConnectionToPDTimeout>.

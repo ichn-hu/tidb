@@ -71,8 +71,8 @@ type TestGlobalKillSuite struct {
 	pdErr error
 
 	clusterId string
-	pdProc   *exec.Cmd
-	tikvProc *exec.Cmd
+	pdProc    *exec.Cmd
+	tikvProc  *exec.Cmd
 }
 
 func (s *TestGlobalKillSuite) SetUpSuite(c *C) {
@@ -586,7 +586,7 @@ func (s *TestGlobalKillSuite) TestLostConnection(c *C) {
 	if err != nil {
 		c.Assert(err.Error(), Equals, "exec: Wait was already called")
 	}
-	time.Sleep(1*time.Second)
+	time.Sleep(1 * time.Second)
 	// restart cluster to restore connection.
 	err = s.startCluster()
 	c.Assert(err, IsNil)
