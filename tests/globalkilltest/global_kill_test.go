@@ -18,7 +18,6 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -53,7 +52,6 @@ var (
 	tidbStatusPort = flag.Int("tidb_status_port", 8000, "first tidb server status port")
 
 	pdClientPath = flag.String("pd", "127.0.0.1:2379", "pd client path")
-	pdProxyPort  = flag.String("pd_proxy_port", "3379", "pd proxy port")
 
 	lostConnectionToPDTimeout       = flag.Int("conn_lost", 5, "lost connection to PD timeout, should be the same as TiDB ldflag <ldflagLostConnectionToPDTimeout>")
 	timeToCheckPDConnectionRestored = flag.Int("conn_restored", 1, "time to check PD connection restored, should be the same as TiDB ldflag <ldflagServerIDTimeToCheckPDConnectionRestored>")
@@ -272,26 +270,6 @@ func (s *TestGlobalKillSuite) stopService(name string, cmd *exec.Cmd, graceful b
 	time.Sleep(1 * time.Second)
 	log.Infof("service \"%s\" killed", name)
 	return nil
-}
-
-func (s *TestGlobalKillSuite) startPDProxy() (proxy *pdProxy, err error) {
-	from := fmt.Sprintf(":%s", *pdProxyPort)
-	if len(s.pdCli.Endpoints()) == 0 {
-		return nil, errors.New("PD no available endpoint")
-	}
-	u, err := url.Parse(s.pdCli.Endpoints()[0]) // use first endpoint, as proxy can accept ONLY one destination.
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	dst := u.Host
-
-	var p pdProxy
-	p.AddRoute(from, to(dst))
-	if err := p.Start(); err != nil {
-		return nil, err
-	}
-	log.Infof("start PD proxy: %s --> %s", from, dst)
-	return &p, nil
 }
 
 func (s *TestGlobalKillSuite) connectTiDB(port int) (db *sql.DB, err error) {

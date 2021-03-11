@@ -52,15 +52,6 @@ function help_message()
 '
 }
 
-function start_cluster()
-{
-   ${PD} --name=pd --data-dir=pd &>pd.log &
-   sleep 10
-   
-   ${TIKV} --pd=127.0.0.1:2379 -s tikv --addr=0.0.0.0:20160 --advertise-addr=127.0.0.1:20160 &>tikv.log  &
-   sleep 10
-}
-
 function clean_cluster()
 {
     set +e
@@ -73,7 +64,6 @@ function clean_cluster()
 function go_tests()
 {
     go test -args $*
-#      go test -check.f TestLostConnection
 }
 
 while getopts "h" opt; do
@@ -86,8 +76,6 @@ while getopts "h" opt; do
 done
 
 clean_cluster
-
-#start_cluster
 
 go_tests
 
