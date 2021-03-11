@@ -539,12 +539,6 @@ func (s *TestGlobalKillSuite) TestMultipleTiDB(c *C) {
 
 func (s *TestGlobalKillSuite) TestLostConnection(c *C) {
 	c.Assert(s.pdErr, IsNil, Commentf(msgErrConnectPD, s.pdErr))
-
-	//// PD proxy
-	//pdProxy, err := s.startPDProxy()
-	//c.Assert(err, IsNil)
-	//pdPath := fmt.Sprintf("127.0.0.1:%s", *pdProxyPort)
-
 	pdPath := fmt.Sprintf("127.0.0.1:%d", 2379)
 
 	// tidb1
@@ -581,10 +575,8 @@ func (s *TestGlobalKillSuite) TestLostConnection(c *C) {
 	go sleepRoutine(ctx, sqlTime, conn1, 0, ch)
 	time.Sleep(waitToStartup) // wait go-routine to start.
 
-	// disconnect to PD by closing PD proxy.
+	// disconnect to PD by shutting down PD process.
 	log.Infof("shutdown PD to simulate lost connection to PD.")
-	//pdProxy.Close()
-	//pdProxy.closeAllConnections()
 	err = s.pdProc.Process.Kill()
 	log.Info("pd shutdown: ", err)
 	c.Assert(err, IsNil)
@@ -617,11 +609,7 @@ func (s *TestGlobalKillSuite) TestLostConnection(c *C) {
 		c.Assert(err.Error(), Equals, "exec: Wait was already called")
 	}
 	time.Sleep(1*time.Second)
-	//// start PD proxy to restore connection.
-	//log.Infof("restart pdProxy")
-	//pdProxy1, err := s.startPDProxy()
-	//c.Assert(err, IsNil)
-	//defer pdProxy1.Close()
+	// restart cluster to restore connection.
 	err = s.startCluster()
 	c.Assert(err, IsNil)
 
