@@ -128,12 +128,14 @@ func (e *PipelinedWindowExec) getRowsInPartition(ctx context.Context) (err error
 		if err != nil {
 			err = errors.Trace(err)
 		}
+		// we return immediately to use a combination of true newPartition but empty e.rows to indicate the data source is drained,
 		if drained {
 			return nil
 		}
 		samePartition, err = e.groupChecker.splitIntoGroups(e.childResult)
 		if samePartition {
-			e.newPartition = false // the only case that when getRowsInPartition gets called, it is not a new partition
+			// the only case that when getRowsInPartition gets called, it is not a new partition.
+			e.newPartition = false
 		}
 		if err != nil {
 			return errors.Trace(err)
@@ -363,6 +365,7 @@ func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced 
 		for i, wf := range p.windowFuncs {
 			slidingWindowAggFunc := p.slidingWindowFuncs[i]
 			if slidingWindowAggFunc != nil && p.initializedSlidingWindow {
+				// TODO(zhifeng): modify slide to allow rows to be started at p.curStartRow
 				err = slidingWindowAggFunc.Slide(ctx, p.rows, p.curStartRow, p.curEndRow, start-p.curStartRow, end-p.curEndRow, p.partialResults[i])
 			} else {
 				// TODO(zhifeng): track memory useage here
@@ -384,8 +387,8 @@ func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced 
 		}
 		produced++
 		p.curRowIdx++
+		p.rows = p.rows[start-p.curStartRow:]
 		p.curStartRow, p.curEndRow = start, end
-		p.rows = p.rows[p.curStartRow:]
 	}
 	return
 }
