@@ -195,6 +195,7 @@ type processor struct {
 	orderByCols     []*expression.Column
 	// expectedCmpResult is used to decide if one value is included in the frame.
 	expectedCmpResult int64
+
 	// rows keeps rows starting from curStartRow, TODO(zhifeng): make it a queue
 	rows         []chunk.Row
 	whole        bool
