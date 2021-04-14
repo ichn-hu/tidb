@@ -35,7 +35,7 @@ type PipelinedWindowExec struct {
 	// executed indicates the child executor is drained or something unexpected happened.
 
 	numWindowFuncs int
-	executed bool
+	executed       bool
 	p              processor // TODO(zhifeng): you don't need a processor, just make it into the executor
 	rows           []chunk.Row
 	consumed       bool
@@ -192,16 +192,16 @@ type processor struct {
 	// curStartRow and curEndRow defines the current frame range
 	curStartRow uint64
 	curEndRow   uint64
-	orderByCols     []*expression.Column
+	orderByCols []*expression.Column
 	// expectedCmpResult is used to decide if one value is included in the frame.
 	expectedCmpResult int64
 
 	// rows keeps rows starting from curStartRow, TODO(zhifeng): make it a queue
-	rows         []chunk.Row
-	whole        bool
-	rowCnt       uint64
-	isRangeFrame bool
-	available    uint64
+	rows                     []chunk.Row
+	whole                    bool
+	rowCnt                   uint64
+	isRangeFrame             bool
+	available                uint64
 	initializedSlidingWindow bool
 }
 
@@ -345,7 +345,7 @@ func (p *processor) getEnd(ctx sessionctx.Context) (uint64, error) {
 func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced int64, err error) {
 	var (
 		start uint64
-		end uint64
+		end   uint64
 	)
 	for !chk.IsFull() && (p.curEndRow < p.rowCnt || (p.curEndRow == p.rowCnt && p.whole)) {
 		start, err = p.getStart(ctx)

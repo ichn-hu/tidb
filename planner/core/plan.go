@@ -552,7 +552,7 @@ func newBasePhysicalPlan(ctx sessionctx.Context, tp string, self PhysicalPlan, o
 		basePlan: newBasePlan(ctx, tp, offset),
 		self:     self,
 	}
-} 
+}
 
 func (p *baseLogicalPlan) ExtractCorrelatedCols() []*expression.CorrelatedColumn {
 	return nil

@@ -3720,16 +3720,16 @@ func (b *executorBuilder) buildWindow(v *plannercore.PhysicalWindow) Executor {
 			resultColIdx++
 		}
 		p := processor{
-			windowFuncs: windowFuncs,
+			windowFuncs:    windowFuncs,
 			partialResults: partialResults,
 		}
 		if v.Frame == nil {
 			p.start = &plannercore.FrameBound{
-				Type: ast.Preceding,
+				Type:      ast.Preceding,
 				UnBounded: true,
 			}
 			p.end = &plannercore.FrameBound{
-				Type: ast.Following,
+				Type:      ast.Following,
 				UnBounded: true,
 			}
 		} else {
@@ -3746,10 +3746,10 @@ func (b *executorBuilder) buildWindow(v *plannercore.PhysicalWindow) Executor {
 		}
 
 		return &PipelinedWindowExec{
-			baseExecutor: base,
+			baseExecutor:   base,
 			groupChecker:   newVecGroupChecker(b.ctx, groupByItems),
 			numWindowFuncs: len(v.WindowFuncDescs),
-			p: p,
+			p:              p,
 		}
 	}
 	childExec := b.build(v.Children()[0])

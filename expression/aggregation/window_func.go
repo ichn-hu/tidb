@@ -70,8 +70,8 @@ var noFrameWindowFuncs = map[string]struct{}{
 	ast.WindowFuncRowNumber:   {},
 }
 
-var addFrameForWindowFunctionPipelining = map[string]ast.FrameClause {
-	ast.WindowFuncRowNumber: ast.FrameClause{
+var addFrameForWindowFunctionPipelining = map[string]ast.FrameClause{
+	ast.WindowFuncRowNumber: {
 		Type: ast.Rows,
 		Extent: ast.FrameExtent{
 			Start: ast.FrameBound{Type: ast.CurrentRow},
