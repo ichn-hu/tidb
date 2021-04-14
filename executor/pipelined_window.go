@@ -35,7 +35,7 @@ type PipelinedWindowExec struct {
 	// executed indicates the child executor is drained or something unexpected happened.
 
 	numWindowFuncs int
-	processor      windowProcessor
+	executed bool
 	p              processor // TODO(zhifeng): you don't need a processor, just make it into the executor
 	rows           []chunk.Row
 	consumed       bool
@@ -48,20 +48,30 @@ func (e *PipelinedWindowExec) Close() error {
 }
 
 // Open implements the Executor Open interface
-func (e *PipelinedWindowExec) Open(ctx context.Context) error {
+func (e *PipelinedWindowExec) Open(ctx context.Context) (err error) {
 	e.consumed = true
 	e.p.init()
+	e.rows = make([]chunk.Row, 0)
 	return e.baseExecutor.Open(ctx)
 }
 
 // Next implements the Executor Next interface.
 func (e *PipelinedWindowExec) Next(ctx context.Context, chk *chunk.Chunk) (err error) {
 	chk.Reset()
-	var wantMore int64
+	var wantMore, produced int64
+
+	if !e.executed {
+		e.executed = true
+		err = e.getRowsInPartition(ctx)
+		if err != nil {
+			return
+		}
+		wantMore, err = e.p.consume(e.ctx, e.rows)
+	}
 	for {
 		// e.p is ready to produce data, we use wantMore here to avoid meaningless produce when the whole frame is required
 		for wantMore == 0 {
-			produced, err := e.p.produce(e.ctx, chk)
+			produced, err = e.p.produce(e.ctx, chk)
 			if err != nil {
 				return err
 			}
@@ -118,12 +128,14 @@ func (e *PipelinedWindowExec) getRowsInPartition(ctx context.Context) (err error
 		if err != nil {
 			err = errors.Trace(err)
 		}
+		// we return immediately to use a combination of true newPartition but empty e.rows to indicate the data source is drained,
 		if drained {
 			return nil
 		}
 		samePartition, err = e.groupChecker.splitIntoGroups(e.childResult)
 		if samePartition {
-			e.newPartition = false // the only case that when getRowsInPartition gets called, it is not a new partition
+			// the only case that when getRowsInPartition gets called, it is not a new partition.
+			e.newPartition = false
 		}
 		if err != nil {
 			return errors.Trace(err)
@@ -201,10 +213,10 @@ func (p *processor) getRows(s, e uint64) []chunk.Row {
 }
 
 func (p *processor) init() {
-	slidingWindowAggFuncs := make([]aggfuncs.SlidingWindowAggFunc, len(p.windowFuncs))
+	p.slidingWindowFuncs = make([]aggfuncs.SlidingWindowAggFunc, len(p.windowFuncs))
 	for i, windowFunc := range p.windowFuncs {
 		if slidingWindowAggFunc, ok := windowFunc.(aggfuncs.SlidingWindowAggFunc); ok {
-			slidingWindowAggFuncs[i] = slidingWindowAggFunc
+			p.slidingWindowFuncs[i] = slidingWindowAggFunc
 		}
 	}
 }
@@ -226,6 +238,7 @@ func (p *processor) consume(ctx sessionctx.Context, rows []chunk.Row) (more int6
 			return
 		}
 	}
+	rows = rows[:0]
 	if p.end.UnBounded {
 		if !p.whole {
 			// we can't proceed until the whole partition is consumed
@@ -328,12 +341,12 @@ func (p *processor) getEnd(ctx sessionctx.Context) (uint64, error) {
 
 // produce produces rows and append it to chk, return produced means number of rows appended into chunk, available means
 // number of rows processed but not fetched
-func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced int, err error) {
+func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced int64, err error) {
 	var (
 		start uint64
 		end uint64
 	)
-	for !chk.IsFull() && p.curRowIdx < p.rowCnt {
+	for !chk.IsFull() && (p.curEndRow < p.rowCnt || (p.curEndRow == p.rowCnt && p.whole)) {
 		start, err = p.getStart(ctx)
 		if err != nil {
 			return
@@ -348,9 +361,11 @@ func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced 
 			}
 			end = p.rowCnt
 		}
+		// TODO(zhifeng): if start >= end, we should return a default value
 		for i, wf := range p.windowFuncs {
 			slidingWindowAggFunc := p.slidingWindowFuncs[i]
 			if slidingWindowAggFunc != nil && p.initializedSlidingWindow {
+				// TODO(zhifeng): modify slide to allow rows to be started at p.curStartRow
 				err = slidingWindowAggFunc.Slide(ctx, p.rows, p.curStartRow, p.curEndRow, start-p.curStartRow, end-p.curEndRow, p.partialResults[i])
 			} else {
 				// TODO(zhifeng): track memory useage here
@@ -371,7 +386,9 @@ func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced 
 			}
 		}
 		produced++
-		p.rows = p.rows[p.curStartRow:]
+		p.curRowIdx++
+		p.rows = p.rows[start-p.curStartRow:]
+		p.curStartRow, p.curEndRow = start, end
 	}
 	return
 }
