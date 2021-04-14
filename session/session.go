@@ -2495,6 +2495,7 @@ var builtinGlobalVariable = []string{
 	variable.TiDBRetryLimit,
 	variable.TiDBDisableTxnAutoRetry,
 	variable.TiDBEnableWindowFunction,
+	variable.TiDBEnablePipelinedWindowFunction,
 	variable.TiDBEnableStrictDoubleTypeCheck,
 	variable.TiDBEnableTablePartition,
 	variable.TiDBEnableVectorizedExpression,

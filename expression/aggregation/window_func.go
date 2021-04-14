@@ -70,6 +70,16 @@ var noFrameWindowFuncs = map[string]struct{}{
 	ast.WindowFuncRowNumber:   {},
 }
 
+var addFrameForWindowFunctionPipelining = map[string]ast.FrameClause {
+	ast.WindowFuncRowNumber: ast.FrameClause{
+		Type: ast.Rows,
+		Extent: ast.FrameExtent{
+			Start: ast.FrameBound{Type: ast.CurrentRow},
+			End:   ast.FrameBound{Type: ast.CurrentRow},
+		},
+	},
+}
+
 // NeedFrame checks if the function need frame specification.
 func NeedFrame(name string) bool {
 	_, ok := noFrameWindowFuncs[strings.ToLower(name)]
