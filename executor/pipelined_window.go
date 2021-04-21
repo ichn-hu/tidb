@@ -32,14 +32,20 @@ type PipelinedWindowExec struct {
 	groupChecker *vecGroupChecker
 	// childResult stores the child chunk
 	childResult *chunk.Chunk
-	// executed indicates the child executor is drained or something unexpected happened.
+	// resultChunks stores the chunks to return
+	resultChunks []*chunk.Chunk
+	// remainingRowsInChunk indicates how many rows the resultChunks[i] is not prepared.
+	remainingRowsInChunk []int
 
 	numWindowFuncs int
-	executed       bool
-	p              processor // TODO(zhifeng): you don't need a processor, just make it into the executor
-	rows           []chunk.Row
-	consumed       bool
-	newPartition   bool
+	// done indicates the child executor is drained or something unexpected happened.
+	done         bool
+	p            processor // TODO(zhifeng): you don't need a processor, just make it into the executor
+	rows         []chunk.Row
+	produced     int64
+	wantMore     int64
+	consumed     bool
+	newPartition bool
 }
 
 // Close implements the Executor Close interface.
@@ -55,70 +61,78 @@ func (e *PipelinedWindowExec) Open(ctx context.Context) (err error) {
 	return e.baseExecutor.Open(ctx)
 }
 
+func (e *PipelinedWindowExec) firstResultChunkNotReady() bool {
+	return len(e.resultChunks) != 0 && e.remainingRowsInChunk[0] != 0
+}
+
 // Next implements the Executor Next interface.
 func (e *PipelinedWindowExec) Next(ctx context.Context, chk *chunk.Chunk) (err error) {
 	chk.Reset()
-	var wantMore, produced int64
 
-	if !e.executed {
-		e.executed = true
-		err = e.getRowsInPartition(ctx)
-		if err != nil {
-			return
-		}
-		wantMore, err = e.p.consume(e.ctx, e.rows)
-	}
-	for {
-		// e.p is ready to produce data, we use wantMore here to avoid meaningless produce when the whole frame is required
-		for wantMore == 0 {
-			produced, err = e.p.produce(e.ctx, chk)
-			if err != nil {
-				return err
-			}
-			if produced == 0 || e.p.available == 0 {
-				// either the chunk is full or no more available rows to produce
-				break
-			}
-		}
-		if chk.IsFull() {
-			break
-		}
-		// reaching here, e.p.available must be 0, because if produced == 0 and available is not 0, it must be
-		// that the chk is full, and it will break in the above branch
-		if e.consumed {
-			err = e.getRowsInPartition(ctx)
-			if err != nil {
-				return err
+	for e.firstResultChunkNotReady() {
+		// we firstly gathering enough rows and consume them, until we are able to produce.
+		// for unbounded frame, it needs consume the whole partition before being able to produce, in this case
+		// e.p.moreToProduce will be false until so.
+		if !e.done && !e.p.moreToProduce() {
+			if e.consumed {
+				err = e.getRowsInPartition(ctx)
+				if err != nil {
+					return err
+				}
 			}
 			if e.newPartition {
 				e.p.finish()
-				wantMore = 0
+				e.wantMore = 0
+				// if we continued, the rows will not be consumed, so next time we should consume it instead of calling e.getRowsInPartition
 				continue
 			}
+			e.wantMore, err = e.p.consume(e.ctx, e.rows)
+			e.consumed = true // TODO(zhifeng): move this into consume() after absorbing p into e
+			if err != nil {
+				return err
+			}
 		}
-		// reaching here, e.consumed must be false. Initially, e.consumed is default to true, and the above branch will be
-		// entered, and e.consumed will be false. If it enters a new partition, the e.consumed will be kept as false before
-		// coming here.
-		if e.newPartition {
+
+		resultChunk := e.resultChunks[0]
+		remained := e.remainingRowsInChunk[0]
+
+		// e.p is ready to produce data, we use wantMore here to avoid meaningless produce when the whole frame is required
+		if e.wantMore == 0 && remained != 0 {
+			produced, err := e.p.produce(e.ctx, resultChunk, remained)
+			remained -= int(produced)
+			if err != nil {
+				return err
+			}
+		}
+		e.remainingRowsInChunk[0] = remained
+		if remained == 0 {
+			break
+		}
+
+		if e.newPartition && !e.p.moreToProduce() {
+			e.newPartition = false
 			e.p.reset()
 			if len(e.rows) == 0 {
 				// no more data
 				break
 			}
 		}
-		wantMore, err = e.p.consume(e.ctx, e.rows)
-		e.consumed = true // TODO(zhifeng): move this into consume() after absorbing p into e
-		if err != nil {
-			return err
-		}
+	}
+	if len(e.resultChunks) > 0 {
+		chk.SwapColumns(e.resultChunks[0])
+		e.resultChunks[0] = nil // GC it. TODO: Reuse it.
+		e.resultChunks = e.resultChunks[1:]
+		e.remainingRowsInChunk = e.remainingRowsInChunk[1:]
 	}
 	return nil
 }
 
 func (e *PipelinedWindowExec) getRowsInPartition(ctx context.Context) (err error) {
 	e.newPartition = true
-	// it should always be a new partition, unless it is the first group of a new chunk and the groupChecker.splitIntoGroups
-	// explicitly tell us that it is not
+	if len(e.rows) == 0 {
+		// if getRowsInPartition is called for the first time, we ignore it as a new partition
+		e.newPartition = false
+	}
 	e.rows = e.rows[0:]
 	e.consumed = false
 
@@ -130,6 +144,7 @@ func (e *PipelinedWindowExec) getRowsInPartition(ctx context.Context) (err error
 		}
 		// we return immediately to use a combination of true newPartition but empty e.rows to indicate the data source is drained,
 		if drained {
+			e.done = true
 			return nil
 		}
 		samePartition, err = e.groupChecker.splitIntoGroups(e.childResult)
@@ -167,6 +182,8 @@ func (e *PipelinedWindowExec) fetchChild(ctx context.Context) (EOF bool, err err
 	if err != nil {
 		return false, err
 	}
+	e.resultChunks = append(e.resultChunks, resultChk)
+	e.remainingRowsInChunk = append(e.remainingRowsInChunk, numRows)
 
 	e.childResult = childResult
 	return false, nil
@@ -201,7 +218,6 @@ type processor struct {
 	whole                    bool
 	rowCnt                   uint64
 	isRangeFrame             bool
-	available                uint64
 	initializedSlidingWindow bool
 }
 
@@ -342,12 +358,12 @@ func (p *processor) getEnd(ctx sessionctx.Context) (uint64, error) {
 
 // produce produces rows and append it to chk, return produced means number of rows appended into chunk, available means
 // number of rows processed but not fetched
-func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced int64, err error) {
+func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk, remained int) (produced int64, err error) {
 	var (
 		start uint64
 		end   uint64
 	)
-	for !chk.IsFull() && (p.curEndRow < p.rowCnt || (p.curEndRow == p.rowCnt && p.whole)) {
+	for remained > 0 && p.moreToProduce() {
 		start, err = p.getStart(ctx)
 		if err != nil {
 			return
@@ -361,6 +377,12 @@ func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced 
 				return
 			}
 			end = p.rowCnt
+		}
+		if start > p.rowCnt {
+			if !p.whole {
+				return
+			}
+			start = p.rowCnt
 		}
 		// TODO(zhifeng): if start >= end, we should return a default value
 		for i, wf := range p.windowFuncs {
@@ -387,6 +409,7 @@ func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced 
 			}
 		}
 		produced++
+		remained--
 		p.curRowIdx++
 		p.rows = p.rows[start-p.curStartRow:]
 		p.curStartRow, p.curEndRow = start, end
@@ -394,8 +417,14 @@ func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk) (produced 
 	return
 }
 
+func (p *processor) moreToProduce() bool {
+	return p.curEndRow < p.rowCnt || (p.curEndRow == p.rowCnt && p.whole && p.curRowIdx < p.rowCnt)
+}
+
 // reset resets the processor
 func (p *processor) reset() {
+	p.curStartRow = 0
+	p.curEndRow = 0
 	p.curRowIdx = 0
 	p.rowCnt = 0
 	p.whole = false

@@ -5293,6 +5293,12 @@ func extractWindowFuncs(fields []*ast.SelectField) []*ast.WindowFuncExpr {
 }
 
 func (b *PlanBuilder) handleDefaultFrame(spec *ast.WindowSpec, windowFuncName string) (*ast.WindowSpec, bool) {
+	useDefaultFrame, defaultFrame := aggregation.UseDefaultFrame(windowFuncName)
+	if useDefaultFrame {
+		newSpec := *spec
+		newSpec.Frame = &defaultFrame
+		return &newSpec, true
+	}
 	needFrame := aggregation.NeedFrame(windowFuncName)
 	// According to MySQL, In the absence of a frame clause, the default frame depends on whether an ORDER BY clause is present:
 	//   (1) With order by, the default frame is equivalent to "RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW";

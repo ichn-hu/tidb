@@ -67,10 +67,10 @@ var noFrameWindowFuncs = map[string]struct{}{
 	ast.WindowFuncNtile:       {},
 	ast.WindowFuncPercentRank: {},
 	ast.WindowFuncRank:        {},
-	ast.WindowFuncRowNumber:   {},
+	//ast.WindowFuncRowNumber:   {},
 }
 
-var addFrameForWindowFunctionPipelining = map[string]ast.FrameClause{
+var useDefaultFrameWindowFuncs = map[string]ast.FrameClause{
 	ast.WindowFuncRowNumber: {
 		Type: ast.Rows,
 		Extent: ast.FrameExtent{
@@ -78,6 +78,11 @@ var addFrameForWindowFunctionPipelining = map[string]ast.FrameClause{
 			End:   ast.FrameBound{Type: ast.CurrentRow},
 		},
 	},
+}
+
+func UseDefaultFrame(name string) (bool, ast.FrameClause) {
+	frame, ok := useDefaultFrameWindowFuncs[strings.ToLower(name)]
+	return ok, frame
 }
 
 // NeedFrame checks if the function need frame specification.
