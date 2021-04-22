@@ -62,18 +62,18 @@ func (e *PipelinedWindowExec) Open(ctx context.Context) (err error) {
 }
 
 func (e *PipelinedWindowExec) firstResultChunkNotReady() bool {
-	return len(e.resultChunks) != 0 && e.remainingRowsInChunk[0] != 0
+	return len(e.remainingRowsInChunk) > 0 && e.remainingRowsInChunk[0] != 0
 }
 
 // Next implements the Executor Next interface.
 func (e *PipelinedWindowExec) Next(ctx context.Context, chk *chunk.Chunk) (err error) {
 	chk.Reset()
 
-	for e.firstResultChunkNotReady() {
+	for !e.done || e.firstResultChunkNotReady() {
 		// we firstly gathering enough rows and consume them, until we are able to produce.
 		// for unbounded frame, it needs consume the whole partition before being able to produce, in this case
 		// e.p.moreToProduce will be false until so.
-		if !e.done && !e.p.moreToProduce() {
+		if !e.done && !e.p.moreToProduce(e.ctx) {
 			if e.consumed {
 				err = e.getRowsInPartition(ctx)
 				if err != nil {
@@ -84,7 +84,15 @@ func (e *PipelinedWindowExec) Next(ctx context.Context, chk *chunk.Chunk) (err e
 				e.p.finish()
 				e.wantMore = 0
 				// if we continued, the rows will not be consumed, so next time we should consume it instead of calling e.getRowsInPartition
-				continue
+				if e.p.moreToProduce(e.ctx) {
+					continue
+				}
+				e.newPartition = false
+				e.p.reset()
+				if len(e.rows) == 0 {
+					// no more data
+					break
+				}
 			}
 			e.wantMore, err = e.p.consume(e.ctx, e.rows)
 			e.consumed = true // TODO(zhifeng): move this into consume() after absorbing p into e
@@ -93,30 +101,26 @@ func (e *PipelinedWindowExec) Next(ctx context.Context, chk *chunk.Chunk) (err e
 			}
 		}
 
-		resultChunk := e.resultChunks[0]
-		remained := e.remainingRowsInChunk[0]
-
 		// e.p is ready to produce data, we use wantMore here to avoid meaningless produce when the whole frame is required
-		if e.wantMore == 0 && remained != 0 {
-			produced, err := e.p.produce(e.ctx, resultChunk, remained)
-			remained -= int(produced)
+		if e.wantMore == 0 && len(e.resultChunks) > 0 && e.remainingRowsInChunk[0] != 0 {
+			produced, err := e.p.produce(e.ctx, e.resultChunks[0], e.remainingRowsInChunk[0])
 			if err != nil {
 				return err
 			}
-		}
-		e.remainingRowsInChunk[0] = remained
-		if remained == 0 {
-			break
-		}
-
-		if e.newPartition && !e.p.moreToProduce() {
-			e.newPartition = false
-			e.p.reset()
-			if len(e.rows) == 0 {
-				// no more data
+			e.remainingRowsInChunk[0] -= int(produced)
+			if e.remainingRowsInChunk[0] == 0 {
 				break
 			}
 		}
+
+		//if e.newPartition && !e.p.moreToProduce(e.ctx) {
+		//	e.newPartition = false
+		//	e.p.reset()
+		//	if len(e.rows) == 0 {
+		//		// no more data
+		//		break
+		//	}
+		//}
 	}
 	if len(e.resultChunks) > 0 {
 		chk.SwapColumns(e.resultChunks[0])
@@ -133,7 +137,7 @@ func (e *PipelinedWindowExec) getRowsInPartition(ctx context.Context) (err error
 		// if getRowsInPartition is called for the first time, we ignore it as a new partition
 		e.newPartition = false
 	}
-	e.rows = e.rows[0:]
+	e.rows = e.rows[:0]
 	e.consumed = false
 
 	if e.groupChecker.isExhausted() {
@@ -316,7 +320,11 @@ func (p *processor) getStart(ctx sessionctx.Context) (uint64, error) {
 
 func (p *processor) getEnd(ctx sessionctx.Context) (uint64, error) {
 	if p.end.UnBounded {
-		return p.rowCnt, nil
+		if p.whole {
+			return p.rowCnt, nil
+		} else {
+			return p.rowCnt + 1, nil
+		}
 	}
 	if p.isRangeFrame {
 		var end uint64
@@ -363,7 +371,7 @@ func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk, remained i
 		start uint64
 		end   uint64
 	)
-	for remained > 0 && p.moreToProduce() {
+	for remained > 0 && p.moreToProduce(ctx) {
 		start, err = p.getStart(ctx)
 		if err != nil {
 			return
@@ -417,8 +425,11 @@ func (p *processor) produce(ctx sessionctx.Context, chk *chunk.Chunk, remained i
 	return
 }
 
-func (p *processor) moreToProduce() bool {
-	return p.curEndRow < p.rowCnt || (p.curEndRow == p.rowCnt && p.whole && p.curRowIdx < p.rowCnt)
+func (p *processor) moreToProduce(ctx sessionctx.Context) bool {
+	end, err := p.getEnd(ctx)
+	_ = err
+	// TODO(Zhifeng): handle the error here
+	return end <= p.rowCnt || (p.whole && p.curRowIdx < p.rowCnt)
 }
 
 // reset resets the processor
